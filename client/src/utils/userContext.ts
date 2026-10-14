@@ -82,6 +82,63 @@ export function setUserOnboarding(email: string, data: any) {
   localStorage.setItem(key, JSON.stringify(data));
 }
 
+export function setUserLogs(email: string, logs: LogItem[]) {
+  if (!email) return;
+  const key = `mf_user_logs_${email.trim().toLowerCase()}`;
+  localStorage.setItem(key, JSON.stringify(logs));
+}
+
+export function seedUserInitialLog(
+  email: string,
+  startingWeightKg: number,
+  baselineTdee: number
+): LogItem[] {
+  if (!email) return [];
+  const key = `mf_user_logs_${email.trim().toLowerCase()}`;
+  const todayStr = new Date().toISOString().split('T')[0];
+  const curW = Number(startingWeightKg) || 78.0;
+  const baseTdee = Number(baselineTdee) || 2340;
+
+  let existingLogs: LogItem[] = [];
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        existingLogs = parsed;
+      }
+    }
+  } catch {
+    existingLogs = [];
+  }
+
+  if (existingLogs.length <= 1) {
+    const initialLogs: LogItem[] = [
+      {
+        date: existingLogs[0]?.date || todayStr,
+        scaleWeight: curW,
+        calories: existingLogs[0]?.calories ?? null,
+        isFasting: existingLogs[0]?.isFasting ?? false,
+        isPartial: existingLogs[0]?.isPartial ?? false,
+        trendWeight: curW,
+        tdee: baseTdee,
+        isHolding: true,
+      },
+    ];
+    localStorage.setItem(key, JSON.stringify(initialLogs));
+    return initialLogs;
+  } else {
+    const todayLog = existingLogs.find((l) => l.date === todayStr);
+    if (todayLog) {
+      todayLog.scaleWeight = curW;
+      todayLog.trendWeight = curW;
+      todayLog.tdee = baseTdee;
+    }
+    localStorage.setItem(key, JSON.stringify(existingLogs));
+    return existingLogs;
+  }
+}
+
 export function getUserLogs(email: string, onboarding?: any): LogItem[] {
   if (!email) return [];
   const key = `mf_user_logs_${email.trim().toLowerCase()}`;
@@ -90,6 +147,17 @@ export function getUserLogs(email: string, onboarding?: any): LogItem[] {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
+        // If the log history contains only the auto-generated initial day entry, update its weight to match onboarding.startingWeightKg
+        if (parsed.length === 1 && onboarding?.startingWeightKg) {
+          const targetWeight = Number(onboarding.startingWeightKg);
+          const targetTdee = Number(onboarding.baselineTdee) || parsed[0].tdee || 2340;
+          if (parsed[0].scaleWeight !== targetWeight || (targetTdee && parsed[0].tdee !== targetTdee)) {
+            parsed[0].scaleWeight = targetWeight;
+            parsed[0].trendWeight = targetWeight;
+            parsed[0].tdee = targetTdee;
+            localStorage.setItem(key, JSON.stringify(parsed));
+          }
+        }
         return parsed;
       }
     }
@@ -196,7 +264,7 @@ export function buildUserDashboardData(
     bmrEquation: 'mifflin_st_jeor',
     checkInDay: 1,
     fastCheckIn: false,
-    weightUnit: 'kg',
+    weightUnit: onboarding?.weightUnit || 'kg',
     energyUnit: 'kcal',
   };
 

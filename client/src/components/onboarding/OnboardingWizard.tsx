@@ -31,7 +31,7 @@ import {
 import { calculateMacros, ProteinTier, DietStyle, PROTEIN_TIERS, DIET_STYLES } from '../../utils/macroMath';
 import { triggerGoalCelebration } from '../../utils/confetti';
 import { api } from '../../api';
-import { setUserOnboarding } from '../../utils/userContext';
+import { setUserOnboarding, seedUserInitialLog } from '../../utils/userContext';
 
 interface OnboardingWizardProps {
   userEmail?: string;
@@ -119,6 +119,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
         if (parsed.biologicalSex) setBiologicalSex(parsed.biologicalSex);
         if (parsed.heightCm) setHeightCm(parsed.heightCm);
         if (parsed.weightKg) setWeightKg(parsed.weightKg);
+        if (parsed.weightUnit) setWeightUnit(parsed.weightUnit);
         if (parsed.bodyFatPercent !== undefined) setBodyFatPercent(parsed.bodyFatPercent);
         if (parsed.activityLevel) setActivityLevel(parsed.activityLevel);
         if (parsed.goalType) setGoalType(parsed.goalType);
@@ -126,11 +127,31 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
         if (parsed.goalRatePercent) setGoalRatePercent(parsed.goalRatePercent);
         if (parsed.proteinTier) setProteinTier(parsed.proteinTier);
         if (parsed.dietStyle) setDietStyle(parsed.dietStyle);
+      } else {
+        const effectiveEmail = userEmail || localStorage.getItem('mf_user_email');
+        if (effectiveEmail) {
+          const key = `mf_user_onboarding_${effectiveEmail.trim().toLowerCase()}`;
+          const savedRaw = localStorage.getItem(key) || localStorage.getItem('mf_user_onboarding');
+          if (savedRaw) {
+            const saved = JSON.parse(savedRaw);
+            if (saved.birthDate) setBirthDate(saved.birthDate);
+            if (saved.biologicalSex) setBiologicalSex(saved.biologicalSex);
+            if (saved.heightCm) setHeightCm(saved.heightCm);
+            if (saved.startingWeightKg) setWeightKg(saved.startingWeightKg);
+            if (saved.weightUnit) setWeightUnit(saved.weightUnit);
+            if (saved.goal?.goalType) setGoalType(saved.goal.goalType);
+            if (saved.goal?.targetWeightKg !== undefined) setTargetWeightKg(saved.goal.targetWeightKg);
+            if (saved.goal?.weeklyRatePercent !== undefined) setGoalRatePercent(saved.goal.weeklyRatePercent);
+            if (saved.program?.programStyle) setProgramStyle(saved.program.programStyle);
+            if (saved.program?.proteinTier) setProteinTier(saved.program.proteinTier);
+            if (saved.program?.dietStyle) setDietStyle(saved.program.dietStyle);
+          }
+        }
       }
     } catch {
       // ignore draft parse error
     }
-  }, []);
+  }, [userEmail]);
 
   // Save draft state
   const saveDraft = () => {
@@ -142,6 +163,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
           biologicalSex,
           heightCm,
           weightKg,
+          weightUnit,
           bodyFatPercent,
           activityLevel,
           goalType,
@@ -291,13 +313,15 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
     setSubmitting(true);
     setErrorMessage(null);
     try {
+      const effectiveEmail = userEmail || localStorage.getItem('mf_user_email') || '';
       const onboardingPayload = {
-        email: userEmail,
+        email: effectiveEmail,
         biologicalSex,
         birthDate,
         heightCm,
         startingWeightKg: weightKg,
         baselineTdee: activeTdee,
+        weightUnit,
         goal: {
           goalType,
           targetWeightKg: goalType === 'maintenance' ? null : targetWeightKg,
@@ -317,8 +341,9 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
 
       triggerGoalCelebration();
       localStorage.setItem('isOnboardingComplete', 'true');
-      if (userEmail) {
-        setUserOnboarding(userEmail, onboardingPayload);
+      if (effectiveEmail) {
+        setUserOnboarding(effectiveEmail, onboardingPayload);
+        seedUserInitialLog(effectiveEmail, weightKg, activeTdee);
       }
       localStorage.setItem('mf_user_onboarding', JSON.stringify(onboardingPayload));
       localStorage.removeItem('mf_onboarding_draft');

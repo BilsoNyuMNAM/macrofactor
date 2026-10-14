@@ -126,6 +126,21 @@ export const App: React.FC = () => {
     try {
       const effectiveEmail = targetEmail ?? localStorage.getItem('mf_user_email') ?? userEmail;
       const isDemo = getIsDemoUser(effectiveEmail);
+      const token = localStorage.getItem('mf_auth_token');
+      const isCompleted = localStorage.getItem('isOnboardingComplete') === 'true';
+
+      // Guard: Do not generate placeholder data when user is in onboarding wizard mode
+      if (!isDemo && (authView === 'wizard' || !isCompleted)) {
+        if (!token) {
+          setAuthView((prev) => (prev === 'checking' ? 'intro' : prev));
+        } else if (!isCompleted) {
+          setAuthView((prev) => (prev === 'checking' ? 'wizard' : prev));
+        }
+        if (!isCompleted) {
+          setLoading(false);
+          return;
+        }
+      }
 
       if (!isDemo) {
         // Build fresh Day-1 MacroFactor experience for newly registered users
@@ -158,9 +173,6 @@ export const App: React.FC = () => {
       }
 
       // Respect authentication status and onboarding progress
-      const token = localStorage.getItem('mf_auth_token');
-      const isCompleted = localStorage.getItem('isOnboardingComplete') === 'true';
-
       if (!token) {
         setAuthView((prev) => (prev === 'checking' ? 'intro' : prev));
       } else if (isCompleted) {
@@ -175,7 +187,7 @@ export const App: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [userEmail, showToast]);
+  }, [userEmail, authView, showToast]);
 
   useEffect(() => {
     refreshAll();
