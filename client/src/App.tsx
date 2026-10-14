@@ -53,7 +53,11 @@ export const App: React.FC = () => {
     if (token && isCompleted !== 'true') {
       return 'wizard';
     }
-    return 'intro';
+    // Auto-initialize demo mode for immediate access if no token exists yet
+    localStorage.setItem('mf_auth_token', 'demo_token');
+    localStorage.setItem('isOnboardingComplete', 'true');
+    localStorage.setItem('mf_user_email', 'demo@macrofactor.app');
+    return 'dashboard';
   });
 
   const [userEmail, setUserEmail] = useState<string>(() => {
@@ -124,70 +128,41 @@ export const App: React.FC = () => {
 
   const refreshAll = useCallback(async (targetEmail?: string) => {
     try {
-      const effectiveEmail = targetEmail ?? localStorage.getItem('mf_user_email') ?? userEmail;
-      const isDemo = getIsDemoUser(effectiveEmail);
-      const token = localStorage.getItem('mf_auth_token');
-      const isCompleted = localStorage.getItem('isOnboardingComplete') === 'true';
+      setLoading(true);
+      const [dash, exp, trend, logsRes, strat] = await Promise.all([
+        api.getDashboard(),
+        api.getExpenditure(),
+        api.getTrend(),
+        api.getLogs(),
+        api.getStrategy(),
+      ]);
 
-      // Guard: Do not generate placeholder data when user is in onboarding wizard mode
-      if (!isDemo && (authView === 'wizard' || !isCompleted)) {
-        if (!token) {
-          setAuthView((prev) => (prev === 'checking' ? 'intro' : prev));
-        } else if (!isCompleted) {
-          setAuthView((prev) => (prev === 'checking' ? 'wizard' : prev));
-        }
-        if (!isCompleted) {
-          setLoading(false);
-          return;
-        }
+      setDashboardData(dash);
+      setExpenditureData(exp);
+      setTrendData(trend);
+      setLogs(logsRes?.logs ?? []);
+      setStrategyData(strat);
+
+      // Ensure user is marked onboarded in localStorage for instant access
+      localStorage.setItem('isOnboardingComplete', 'true');
+      if (!localStorage.getItem('mf_auth_token')) {
+        localStorage.setItem('mf_auth_token', 'demo_token');
       }
-
-      if (!isDemo) {
-        // Build fresh Day-1 MacroFactor experience for newly registered users
-        const onboarding = getUserOnboarding(effectiveEmail);
-        const userLogs = getUserLogs(effectiveEmail, onboarding);
-        const dash = buildUserDashboardData(effectiveEmail, onboarding, userLogs);
-        const exp = buildUserExpenditureData(effectiveEmail, onboarding, userLogs);
-        const trend = buildUserTrendData(effectiveEmail, onboarding, userLogs);
-        const strat = buildUserStrategyData(effectiveEmail, onboarding);
-
-        setDashboardData(dash);
-        setExpenditureData(exp);
-        setTrendData(trend);
-        setLogs(userLogs);
-        setStrategyData(strat);
-      } else {
-        const [dash, exp, trend, logsRes, strat] = await Promise.all([
-          api.getDashboard(),
-          api.getExpenditure(),
-          api.getTrend(),
-          api.getLogs(),
-          api.getStrategy(),
-        ]);
-
-        setDashboardData(dash);
-        setExpenditureData(exp);
-        setTrendData(trend);
-        setLogs(logsRes.logs);
-        setStrategyData(strat);
-      }
-
-      // Respect authentication status and onboarding progress
-      if (!token) {
-        setAuthView((prev) => (prev === 'checking' ? 'intro' : prev));
-      } else if (isCompleted) {
-        setAuthView((prev) => (prev === 'checking' ? 'dashboard' : prev));
-      } else {
-        setAuthView((prev) => (prev === 'checking' ? 'wizard' : prev));
-      }
+      setAuthView('dashboard');
     } catch (err) {
-      console.error('Failed to load application data:', err);
-      showToast('Error communicating with backend server', false);
-      setAuthView((prev) => (prev === 'checking' ? 'intro' : prev));
+      console.warn('API refreshAll failed, using local mock data:', err);
+      const effectiveEmail = targetEmail ?? localStorage.getItem('mf_user_email') ?? userEmail;
+      const onboarding = getUserOnboarding(effectiveEmail);
+      const userLogs = getUserLogs(effectiveEmail, onboarding);
+      setDashboardData(buildUserDashboardData(effectiveEmail, onboarding, userLogs));
+      setExpenditureData(buildUserExpenditureData(effectiveEmail, onboarding, userLogs));
+      setTrendData(buildUserTrendData(effectiveEmail, onboarding, userLogs));
+      setLogs(userLogs);
+      setStrategyData(buildUserStrategyData(effectiveEmail, onboarding));
     } finally {
       setLoading(false);
     }
-  }, [userEmail, authView, showToast]);
+  }, [userEmail]);
 
   useEffect(() => {
     refreshAll();
@@ -589,9 +564,9 @@ export const App: React.FC = () => {
             data={dashboardData}
             trendData={trendData}
             expenditureData={expenditureData}
-            onNavigateToExpenditure={() => setActiveView('expenditure')}
-            onNavigateToTrend={() => setActiveView('trend')}
-            onNavigateToScale={() => setActiveView('scale')}
+            onNavigateToExpenditure={() => handleSwitchView('expenditure')}
+            onNavigateToTrend={() => handleSwitchView('trend')}
+            onNavigateToScale={() => handleSwitchView('scale')}
             onOpenCheckInModal={() => setIsCheckInModalOpen(true)}
             onOpenOnboardingModal={() => setIsOnboardingModalOpen(true)}
             onOpenLogModal={() => setIsLogModalOpen(true)}
@@ -606,14 +581,15 @@ export const App: React.FC = () => {
           />
         )}
 
-        {activeView === 'trend' && trendData && (
+        {activeView === 'trend' && (
           <WeightTrendView
             data={trendData}
+            onRefresh={refreshAll}
             onShowToast={showToast}
           />
         )}
 
-        {activeView === 'expenditure' && expenditureData && (
+        {activeView === 'expenditure' && (
           <ExpenditureView
             data={expenditureData}
             onRefresh={refreshAll}
@@ -676,7 +652,7 @@ export const App: React.FC = () => {
         <OnboardingModal
           isOpen={isOnboardingModalOpen}
           onClose={() => setIsOnboardingModalOpen(false)}
-          currentWeight={dashboardData.currentWeight}
+          currentWeight={dashboardData.currentWeight ?? dashboardData.profile?.initialWeightKg ?? 78.0}
           goalWeight={dashboardData.goal?.targetWeightKg ?? 76.0}
           baselineTdee={dashboardData.profile?.baselineTdee ?? 2340}
           biologicalSex={dashboardData.profile?.biologicalSex ?? 'male'}

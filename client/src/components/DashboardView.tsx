@@ -74,6 +74,14 @@ const ExpenditureSparkline: React.FC<{
   entries: Array<{ tdee: number; fluxUpper?: number; fluxLower?: number }>;
   baselineTdee?: number;
 }> = ({ entries, baselineTdee = 2340 }) => {
+  if (entries.length === 0) {
+    return (
+      <div className="w-full h-full flex items-center justify-center">
+        <div className="w-full border-b border-dashed border-[#2E303A]" />
+      </div>
+    );
+  }
+
   const width = 280;
   const height = 48;
   const padX = 12;
@@ -158,6 +166,14 @@ const WeightTrendSparkline: React.FC<{
   weights: number[];
   initialWeight?: number;
 }> = ({ weights, initialWeight = 78.0 }) => {
+  if (weights.length === 0) {
+    return (
+      <div className="w-full h-full flex items-center justify-center">
+        <div className="w-full border-b border-dashed border-[#2E303A]" />
+      </div>
+    );
+  }
+
   const width = 280;
   const height = 48;
   const padX = 12;
@@ -212,6 +228,14 @@ const ScaleWeightSparkline: React.FC<{
   weights: number[];
   initialWeight?: number;
 }> = ({ weights, initialWeight = 78.0 }) => {
+  if (weights.length === 0) {
+    return (
+      <div className="w-full h-full flex items-center justify-center">
+        <div className="w-full border-b border-dashed border-[#2E303A]" />
+      </div>
+    );
+  }
+
   const width = 280;
   const height = 48;
   const padX = 12;
@@ -302,9 +326,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     if (data.recentTrend && data.recentTrend.length > 0) {
       return data.recentTrend.map((t) => t.weight);
     }
-    const initialW = data.profile?.initialWeightKg ?? data.currentWeight;
-    return initialW ? [initialW, initialW] : [];
-  }, [trendData, data.recentTrend, data.profile?.initialWeightKg, data.currentWeight]);
+    return [];
+  }, [trendData, data.recentTrend]);
 
   // Extract recent 7 scale weights (where recorded)
   const recentScaleWeights = React.useMemo(() => {
@@ -312,20 +335,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const withScale = trendData.entries
         .filter((e) => e.scaleWeight !== null && e.scaleWeight !== undefined)
         .map((e) => e.scaleWeight as number);
-      if (withScale.length >= 2) {
+      if (withScale.length > 0) {
         return withScale.slice(-7);
       }
     }
     if (data.recentScale && data.recentScale.length > 0) {
       return data.recentScale.map((s) => s.weight);
     }
-    const initialW = data.currentScaleWeight ?? data.profile?.initialWeightKg ?? data.currentWeight;
-    return initialW ? [initialW, initialW] : [];
-  }, [trendData, data.recentScale, data.currentScaleWeight, data.profile?.initialWeightKg, data.currentWeight]);
+    return [];
+  }, [trendData, data.recentScale]);
 
-  const expenditureVal = Math.round(data.currentTdee);
-  const trendWeightVal = (trendData?.analytics?.currentWeight ?? data.currentWeight).toFixed(1);
-  const scaleWeightVal = (data.currentScaleWeight ?? data.profile?.initialWeightKg ?? data.currentWeight).toFixed(1);
+  const hasScaleWeight = recentScaleWeights.length > 0;
+  const hasTrendWeight = recentTrendWeights.length > 0 || Boolean(trendData?.entries && trendData.entries.length > 0);
+  const hasExpenditure = recentExpenditure.length > 0 || Boolean(expenditureData?.entries && expenditureData.entries.length > 0);
+
+  const expNum = data.currentTdee ?? (recentExpenditure.length > 0 ? recentExpenditure[recentExpenditure.length - 1].tdee : null);
+  const expenditureVal = hasExpenditure && expNum != null ? Math.round(expNum).toString() : '—';
+
+  const trendWNum = trendData?.analytics?.currentWeight ?? data.currentWeight ?? (recentTrendWeights.length > 0 ? recentTrendWeights[recentTrendWeights.length - 1] : null);
+  const trendWeightVal = hasTrendWeight && trendWNum != null
+    ? trendWNum.toFixed(1)
+    : '—';
+
+  const scaleWNum = recentScaleWeights[recentScaleWeights.length - 1] ?? data.currentScaleWeight ?? data.currentWeight;
+  const scaleWeightVal = hasScaleWeight && scaleWNum != null
+    ? scaleWNum.toFixed(1)
+    : '—';
 
   const schedule = data.schedule;
   const isCheckInActionable =
@@ -335,14 +370,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     <div className="max-w-4xl mx-auto space-y-6 pt-2 pb-12 animate-in fade-in duration-150">
       {/* Top 3 Pagination Dots (Native App Carousel) */}
       <div className="flex items-center justify-center gap-2">
-
-        <button
-          onClick={() => setActivePage(1)}
-          className={`w-1.5 h-1.5 rounded-full transition-all ${activePage === 1 ? 'bg-white scale-125' : 'bg-[#40424D] hover:bg-gray-400'
+        {[0, 1, 2].map((page) => (
+          <button
+            key={page}
+            onClick={() => setActivePage(page)}
+            className={`w-2 h-2 rounded-full transition-all ${
+              activePage === page ? 'bg-white scale-125' : 'bg-[#40424D] hover:bg-gray-400'
             }`}
-          aria-label="Analytics Dashboard Page"
-        />
-
+            aria-label={`Dashboard Page ${page}`}
+          />
+        ))}
       </div>
 
       {/* Actionable Check-In Notice Banner (only displayed when check-in is ready/early) */}
@@ -397,13 +434,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               >
                 <div>
                   <h4 className="text-[15px] font-semibold text-white tracking-tight">Expenditure</h4>
-                  <p className="text-[12px] text-gray-400 mt-0.5">Last 7 Days</p>
+                  <p className="text-[12px] text-gray-400 mt-0.5">
+                    {hasExpenditure ? 'Last 7 Days' : 'No expenditure data'}
+                  </p>
                 </div>
 
                 <div className="my-3 h-[58px] flex items-center">
                   <ExpenditureSparkline
                     entries={recentExpenditure}
-                    baselineTdee={data.profile?.baselineTdee ?? data.currentTdee}
+                    baselineTdee={data.profile?.baselineTdee ?? (data.currentTdee ?? undefined)}
                   />
                 </div>
 
@@ -412,7 +451,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <span className="text-[20px] font-bold text-white tracking-tight font-sans">
                       {expenditureVal}
                     </span>
-                    <span className="text-[13px] text-gray-400 ml-1 font-normal">kcal</span>
+                    {hasExpenditure && (
+                      <span className="text-[13px] text-gray-400 ml-1 font-normal">kcal</span>
+                    )}
                   </div>
                   <ChevronRight className="w-4 h-4 text-gray-500 group-hover:text-gray-300 transition-colors" />
                 </div>
@@ -425,13 +466,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               >
                 <div>
                   <h4 className="text-[15px] font-semibold text-white tracking-tight">Weight Trend</h4>
-                  <p className="text-[12px] text-gray-400 mt-0.5">Last 7 Days</p>
+                  <p className="text-[12px] text-gray-400 mt-0.5">
+                    {hasTrendWeight ? 'Last 7 Days' : 'No trend data'}
+                  </p>
                 </div>
 
                 <div className="my-3 h-[58px] flex items-center">
                   <WeightTrendSparkline
                     weights={recentTrendWeights}
-                    initialWeight={data.profile?.initialWeightKg ?? data.currentWeight}
+                    initialWeight={data.profile?.initialWeightKg ?? (data.currentWeight ?? undefined)}
                   />
                 </div>
 
@@ -440,7 +483,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <span className="text-[20px] font-bold text-white tracking-tight font-sans">
                       {trendWeightVal}
                     </span>
-                    <span className="text-[13px] text-gray-400 ml-1 font-normal">kg</span>
+                    {hasTrendWeight && (
+                      <span className="text-[13px] text-gray-400 ml-1 font-normal">kg</span>
+                    )}
                   </div>
                   <ChevronRight className="w-4 h-4 text-gray-500 group-hover:text-gray-300 transition-colors" />
                 </div>
@@ -468,13 +513,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               >
                 <div>
                   <h4 className="text-[15px] font-semibold text-white tracking-tight">Scale Weight</h4>
-                  <p className="text-[12px] text-gray-400 mt-0.5">Last 7 Entries</p>
+                  <p className="text-[12px] text-gray-400 mt-0.5">
+                    {hasScaleWeight ? 'Last 7 Entries' : 'No entries recorded'}
+                  </p>
                 </div>
 
                 <div className="my-3 h-[58px] flex items-center">
                   <ScaleWeightSparkline
                     weights={recentScaleWeights}
-                    initialWeight={data.currentScaleWeight ?? data.profile?.initialWeightKg ?? data.currentWeight}
+                    initialWeight={data.currentScaleWeight ?? data.profile?.initialWeightKg ?? (data.currentWeight ?? undefined)}
                   />
                 </div>
 
@@ -483,7 +530,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <span className="text-[20px] font-bold text-white tracking-tight font-sans">
                       {scaleWeightVal}
                     </span>
-                    <span className="text-[13px] text-gray-400 ml-1 font-normal">kg</span>
+                    {hasScaleWeight && (
+                      <span className="text-[13px] text-gray-400 ml-1 font-normal">kg</span>
+                    )}
                   </div>
                   <ChevronRight className="w-4 h-4 text-gray-500 group-hover:text-gray-300 transition-colors" />
                 </div>

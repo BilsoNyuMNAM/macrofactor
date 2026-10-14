@@ -26,25 +26,25 @@ exports.trendRouter.get('/', async (req, res) => {
             return res.json({
                 entries: [],
                 header: {
-                    average: 78.0,
-                    differenceFormatted: '0.0 kg',
+                    average: null,
+                    differenceFormatted: '—',
                     rawDifference: 0,
-                    dateRangeSubtitle: '--'
+                    dateRangeSubtitle: '—'
                 },
                 changes: {
-                    threeDay: { delta: '-- kg', status: 'Waiting', sparklinePoints: [] },
-                    sevenDay: { delta: '-- kg', status: 'Waiting', sparklinePoints: [] },
-                    fourteenDay: { delta: '-- kg', status: 'Waiting', sparklinePoints: [] },
-                    thirtyDay: { delta: '-- kg', status: 'Waiting', sparklinePoints: [] },
-                    ninetyDay: { delta: '-- kg', status: 'Waiting', sparklinePoints: [] }
+                    threeDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+                    sevenDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+                    fourteenDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+                    thirtyDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+                    ninetyDay: { delta: '—', status: 'Waiting', sparklinePoints: [] }
                 },
                 analytics: {
-                    currentWeight: 78.0,
-                    weeklyRateKg: 0,
-                    weeklyRateFormatted: '0.00',
-                    dailyDeficitKcal: 0,
-                    dailyDeficitFormatted: '0',
-                    projected30d: 78.0
+                    currentWeight: null,
+                    weeklyRateKg: null,
+                    weeklyRateFormatted: '—',
+                    dailyDeficitKcal: null,
+                    dailyDeficitFormatted: '—',
+                    projected30d: null
                 }
             });
         }
@@ -57,13 +57,18 @@ exports.trendRouter.get('/', async (req, res) => {
                 trendWeight: t.trendWeightKg,
                 weightVelocityKgPerDay: t.velocityKgPerDay,
                 rawIntake: null,
+                imputedIntake: null,
                 isFasting: false,
                 isValidIntake: true,
                 tdee: td?.expenditureKcal ?? 2340,
                 tdeeDelta: td?.tdeeDeltaKcal ?? 0,
                 fluxUpper: td?.fluxUpperKcal ?? 2400,
                 fluxLower: td?.fluxLowerKcal ?? 2300,
+                fluxRadius: (td?.fluxUpperKcal && td?.fluxLowerKcal) ? (td.fluxUpperKcal - td.fluxLowerKcal) / 2 : 45,
+                strategy: td?.status ?? 'updating',
                 isHolding: td?.status === 'holding',
+                isColdStart: false,
+                confidenceScore: 1,
                 noiseRangeLower: t.noiseRangeLowerKg ?? t.trendWeightKg - 0.3,
                 noiseRangeUpper: t.noiseRangeUpperKg ?? t.trendWeightKg + 0.3
             };
@@ -109,11 +114,11 @@ exports.trendRouter.get('/', async (req, res) => {
             changes: changeByHorizon,
             analytics: {
                 currentWeight: typicalMetrics?.currentTrendWeightKg ?? latest.trendWeightKg,
-                weeklyRateKg: typicalMetrics?.weeklyRateKg ?? 0,
-                weeklyRateFormatted: typicalMetrics?.weeklyRateFormatted ?? '0.00',
-                dailyDeficitKcal: typicalMetrics?.dailyDeficitKcal ?? 0,
-                dailyDeficitFormatted: typicalMetrics?.dailyDeficitFormatted ?? '0',
-                projected30d: typicalMetrics?.projected30dKg ?? latest.trendWeightKg
+                weeklyRateKg: typicalMetrics?.weeklyRateKg ?? null,
+                weeklyRateFormatted: typicalMetrics?.weeklyRateFormatted ?? '—',
+                dailyDeficitKcal: typicalMetrics?.dailyDeficitKcal ?? null,
+                dailyDeficitFormatted: typicalMetrics?.dailyDeficitFormatted ?? '—',
+                projected30d: typicalMetrics?.projected30dKg ?? null
             }
         });
     }

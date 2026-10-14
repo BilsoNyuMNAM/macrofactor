@@ -22,16 +22,19 @@ dashboardRouter.get('/', async (_req, res) => {
       orderBy: { createdAt: 'desc' }
     });
 
-    const currentWeight = latestTrend?.trendWeightKg ?? profile?.initialWeightKg ?? 78.0;
-    const currentTdee = latestTdee?.expenditureKcal ?? profile?.baselineTdee ?? 2340;
+    const currentWeight = latestTrend?.trendWeightKg ?? profile?.initialWeightKg ?? null;
+    const currentTdee = latestTdee?.expenditureKcal ?? profile?.baselineTdee ?? null;
     const tdeeStatus = latestTdee?.status ?? 'updating';
 
     const goalRatePercent = goal?.weeklyRatePercent ?? -0.50;
     const goalWeight = goal?.targetWeightKg ?? 76.0;
 
+    const programTdee = currentTdee ?? profile?.baselineTdee ?? 2340;
+    const programWeight = currentWeight ?? profile?.initialWeightKg ?? 78.0;
+
     const solved = solveWeeklyNutritionProgram(
-      currentTdee,
-      currentWeight,
+      programTdee,
+      programWeight,
       goalRatePercent,
       goalWeight,
       profile?.biologicalSex ?? 'male'
@@ -41,7 +44,7 @@ dashboardRouter.get('/', async (_req, res) => {
       ? {
           calories: activePlan.targetCalories,
           dailyDeficitKcal: activePlan.dailyDeficitKcal,
-          weeklyLossRateKg: ((Math.abs(goalRatePercent) / 100.0) * currentWeight),
+          weeklyLossRateKg: ((Math.abs(goalRatePercent) / 100.0) * programWeight),
           estimatedEndDateStr: solved.estimatedEndDateStr,
           weeksToGoal: solved.weeksToGoal,
           proteinGrams: solved.proteinGrams,
@@ -79,7 +82,7 @@ dashboardRouter.get('/', async (_req, res) => {
       profile,
       goal,
       currentWeight,
-      currentScaleWeight: latestScale?.weightKg ?? 77.8,
+      currentScaleWeight: latestScale?.weightKg ?? null,
       currentTdee,
       tdeeStatus,
       program,

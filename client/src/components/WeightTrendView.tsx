@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   TrendingDown,
   TrendingUp,
@@ -11,7 +11,8 @@ import { TrendResponse, WeightTrendPoint } from '../types';
 import { api } from '../api';
 
 interface WeightTrendViewProps {
-  data: TrendResponse;
+  data?: TrendResponse | null;
+  onRefresh?: () => void;
   onShowToast: (msg: string) => void;
 }
 
@@ -127,22 +128,36 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
   data: initialData,
   onShowToast: _onShowToast,
 }) => {
-  const [trendData, setTrendData] = useState<TrendResponse>(initialData);
+  const [trendData, setTrendData] = useState<TrendResponse | null>(initialData || null);
+  const [_loading, setLoading] = useState<boolean>(!initialData);
   const [timeframe, setTimeframe] = useState<'1W' | '1M' | '3M' | '6M' | '1Y' | 'All'>('1M');
+
+  const fetchTrendData = useCallback(async (tf: '1W' | '1M' | '3M' | '6M' | '1Y' | 'All') => {
+    try {
+      setLoading(true);
+      const res = await api.getTrend(tf);
+      setTrendData(res);
+    } catch (err) {
+      console.error('Failed to load weight trend data:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   // Sync if prop updates
   useEffect(() => {
-    setTrendData(initialData);
+    if (initialData) {
+      setTrendData(initialData);
+    }
   }, [initialData]);
+
+  // Self-fetch fresh data on mount and whenever timeframe changes
+  useEffect(() => {
+    fetchTrendData(timeframe);
+  }, [timeframe, fetchTrendData]);
 
   const handleTimeframeChange = async (tf: '1W' | '1M' | '3M' | '6M' | '1Y' | 'All') => {
     setTimeframe(tf);
-    try {
-      const res = await api.getTrend(tf);
-      setTrendData(res);
-    } catch {
-      // Fallback
-    }
   };
 
   const canvasContainerRef = useRef<HTMLDivElement | null>(null);
@@ -154,40 +169,74 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
   } | null>(null);
 
   const filteredEntries = useMemo(() => {
-    if (!trendData.entries || trendData.entries.length === 0) return [];
-    if (timeframe === 'All') return trendData.entries;
+    const entries = trendData?.entries;
+    if (!entries || entries.length === 0) return [];
+    if (timeframe === 'All') return entries;
 
     const daysMap = { '1W': 7, '1M': 30, '3M': 90, '6M': 180, '1Y': 365 };
     const days = daysMap[timeframe] || 30;
 
-    const latestDate = new Date(trendData.entries[trendData.entries.length - 1].date + 'T00:00:00Z');
+    const latestDate = new Date(entries[entries.length - 1].date + 'T00:00:00Z');
     const cutoff = new Date(latestDate);
     cutoff.setUTCDate(cutoff.getUTCDate() - (days - 1));
 
-    const res = trendData.entries.filter((item) => new Date(item.date + 'T00:00:00Z') >= cutoff);
-    return res.length > 0 ? res : trendData.entries;
-  }, [trendData.entries, timeframe]);
+    const res = entries.filter((item) => new Date(item.date + 'T00:00:00Z') >= cutoff);
+    return res.length > 0 ? res : entries;
+  }, [trendData?.entries, timeframe]);
 
-  // Top Hero Header Metrics (7-Day Current Trend status)
+  // Top Hero Header Metrics (Dynamically bound to active timeframe window and scrubber)
   const headerMetrics = useMemo(() => {
-    const entries = trendData.entries || [];
+    const entries = filteredEntries;
     if (entries.length === 0) {
       return {
-        averageWeight: '78.2',
-        differenceWeight: '−0.5',
-        dateRangeStr: '8 – 14 Oct 2026',
+        averageWeight: '—',
+        differenceWeight: '—',
+        dateRangeStr: 'No Data in Timeframe',
+        averageLabel: 'Average',
+        differenceLabel: 'Difference',
       };
     }
 
-    const recent7 = entries.slice(-7);
-    const sum = recent7.reduce((acc, curr) => acc + curr.trendWeight, 0);
-    const avg = (sum / recent7.length).toFixed(1);
+    // Dynamic Scrubber Inspection Mode
+    if (hoveredPoint?.pt) {
+      const idx = entries.findIndex((e) => e.date === hoveredPoint.pt.date);
+      const targetPt = hoveredPoint.pt;
+      const avg = targetPt.trendWeight.toFixed(1);
 
-    const first = recent7[0];
-    const last = recent7[recent7.length - 1];
-    const rawDiff = last.trendWeight - first.trendWeight;
+      let diffFormatted = '0.0';
+      if (idx > 0) {
+        const prevPt = entries[idx - 1];
+        const rawDiff = targetPt.trendWeight - prevPt.trendWeight;
+        const diffVal = Math.abs(rawDiff).toFixed(1);
+        diffFormatted = Math.abs(rawDiff) < 0.05 ? '0.0' : rawDiff < 0 ? `−${diffVal}` : `+${diffVal}`;
+      }
+
+      const d = new Date(targetPt.date + 'T00:00:00Z');
+      const dateStr = d.toLocaleDateString('en-GB', {
+        weekday: 'short',
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        timeZone: 'UTC',
+      });
+
+      return {
+        averageWeight: avg,
+        differenceWeight: diffFormatted,
+        dateRangeStr: dateStr,
+        averageLabel: 'Trend Weight',
+        differenceLabel: 'Day Change',
+      };
+    }
+
+    const sum = entries.reduce((acc, curr) => acc + (curr.trendWeight || 0), 0);
+    const avg = (sum / entries.length).toFixed(1);
+
+    const first = entries[0];
+    const last = entries[entries.length - 1];
+    const rawDiff = (last.trendWeight || 0) - (first.trendWeight || 0);
     const diffVal = Math.abs(rawDiff).toFixed(1);
-    const diffFormatted = rawDiff < 0 ? `−${diffVal}` : rawDiff > 0 ? `+${diffVal}` : '0.0';
+    const diffFormatted = Math.abs(rawDiff) < 0.05 ? '0.0' : rawDiff < 0 ? `−${diffVal}` : rawDiff > 0 ? `+${diffVal}` : '0.0';
 
     const d1 = new Date(first.date + 'T00:00:00Z');
     const d2 = new Date(last.date + 'T00:00:00Z');
@@ -204,8 +253,10 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
       averageWeight: avg,
       differenceWeight: diffFormatted,
       dateRangeStr,
+      averageLabel: 'Average',
+      differenceLabel: 'Difference',
     };
-  }, [trendData.entries]);
+  }, [filteredEntries, hoveredPoint]);
 
   // MacroFactor Authentic Canvas Renderer
   useEffect(() => {
@@ -213,36 +264,61 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
     const container = canvasContainerRef.current;
     if (!canvas || !container) return;
 
+    let animId: number;
+
     const render = () => {
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
       const dpr = window.devicePixelRatio || 1;
       const rect = container.getBoundingClientRect();
+      const w = rect.width || container.clientWidth || 800;
+      const h = rect.height || container.clientHeight || 320;
 
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
+      if (w <= 0 || h <= 0) {
+        animId = requestAnimationFrame(render);
+        return;
+      }
+
+      const targetW = Math.round(w * dpr);
+      const targetH = Math.round(h * dpr);
+      if (canvas.width !== targetW || canvas.height !== targetH) {
+        canvas.width = targetW;
+        canvas.height = targetH;
+      }
+      ctx.resetTransform?.();
       ctx.scale(dpr, dpr);
 
-      const w = rect.width;
-      const h = rect.height;
       const pad = { top: 25, right: 48, bottom: 42, left: 16 };
 
       // Dark canvas background
       ctx.fillStyle = '#16171B';
       ctx.fillRect(0, 0, w, h);
 
-      if (filteredEntries.length === 0) return;
+      if (filteredEntries.length === 0) {
+        // Draw subtle placeholder horizontal grid lines
+        ctx.strokeStyle = '#23252E';
+        ctx.lineWidth = 1;
+        for (let y = pad.top; y <= h - pad.bottom; y += 45) {
+          ctx.beginPath();
+          ctx.moveTo(pad.left, y);
+          ctx.lineTo(w - pad.right, y);
+          ctx.stroke();
+        }
+        return;
+      }
 
       let minVal = Infinity;
       let maxVal = -Infinity;
       filteredEntries.forEach((d) => {
-        if (d.scaleWeight !== null) {
+        if (d.scaleWeight != null && isFinite(d.scaleWeight)) {
           minVal = Math.min(minVal, d.scaleWeight);
           maxVal = Math.max(maxVal, d.scaleWeight);
         }
-        minVal = Math.min(minVal, d.trendWeight);
-        maxVal = Math.max(maxVal, d.trendWeight);
+        if (d.trendWeight != null && isFinite(d.trendWeight)) {
+          minVal = Math.min(minVal, d.trendWeight);
+          maxVal = Math.max(maxVal, d.trendWeight);
+        }
       });
 
       if (!isFinite(minVal)) minVal = 77;
@@ -264,7 +340,7 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
         pad.left + (i / Math.max(1, filteredEntries.length - 1)) * (w - pad.left - pad.right);
 
       const getY = (val: number) =>
-        pad.top + (1 - (val - yMin) / (yMax - yMin)) * (h - pad.top - pad.bottom);
+        pad.top + (1 - (val - yMin) / (yMax - yMin || 1)) * (h - pad.top - pad.bottom);
 
       // Horizontal subtle solid grid lines
       ctx.lineWidth = 1;
@@ -323,12 +399,17 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
       // 1. SCALE WEIGHT LINE: Muted dark violet undulating spline
       const scalePts: { x: number; y: number }[] = [];
       filteredEntries.forEach((d, i) => {
-        if (d.scaleWeight !== null) {
+        if (d.scaleWeight != null && isFinite(d.scaleWeight)) {
           scalePts.push({ x: getX(i), y: getY(d.scaleWeight) });
         }
       });
 
-      if (scalePts.length >= 2) {
+      if (scalePts.length === 1) {
+        ctx.fillStyle = '#7D739B';
+        ctx.beginPath();
+        ctx.arc(scalePts[0].x, scalePts[0].y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (scalePts.length >= 2) {
         ctx.strokeStyle = '#7D739B';
         ctx.lineWidth = 1.8;
         ctx.lineJoin = 'round';
@@ -339,10 +420,21 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
       // 2. TREND WEIGHT LINE: Authentic MacroFactor lavender curve
       const trendPts: { x: number; y: number }[] = [];
       filteredEntries.forEach((d, i) => {
-        trendPts.push({ x: getX(i), y: getY(d.trendWeight) });
+        if (d.trendWeight != null && isFinite(d.trendWeight)) {
+          trendPts.push({ x: getX(i), y: getY(d.trendWeight) });
+        }
       });
 
-      if (trendPts.length >= 2) {
+      if (trendPts.length === 1) {
+        ctx.strokeStyle = '#C7B8F5';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(pad.left, trendPts[0].y);
+        ctx.lineTo(w - pad.right, trendPts[0].y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else if (trendPts.length >= 2) {
         ctx.strokeStyle = '#C7B8F5';
         ctx.lineWidth = 2.4;
         ctx.lineJoin = 'round';
@@ -398,25 +490,27 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
       }
     };
 
-    render();
+    animId = requestAnimationFrame(render);
 
     const resizeObserver = new ResizeObserver(() => {
       render();
     });
     resizeObserver.observe(container);
 
+    window.addEventListener('resize', render);
+
     return () => {
+      cancelAnimationFrame(animId);
       resizeObserver.disconnect();
+      window.removeEventListener('resize', render);
     };
   }, [filteredEntries, hoveredPoint]);
 
-  // Mouse hover detection
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas || filteredEntries.length === 0) return;
+  const updateHoveredFromClientX = (clientX: number, canvas: HTMLCanvasElement) => {
+    if (filteredEntries.length === 0) return;
 
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
+    const x = clientX - rect.left;
     const pad = { left: 16, right: 48 };
     const chartW = rect.width - pad.left - pad.right;
 
@@ -433,11 +527,24 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
 
     const pt = filteredEntries[closestIdx];
     const hoverX = pad.left + (closestIdx / Math.max(1, filteredEntries.length - 1)) * chartW;
-    setHoveredPoint({
-      pt,
-      x: hoverX,
-      y: 75,
+    setHoveredPoint((prev) => {
+      if (prev && prev.pt.date === pt.date) return prev;
+      return { pt, x: hoverX, y: 75 };
     });
+  };
+
+  // Mouse hover detection
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    updateHoveredFromClientX(e.clientX, canvas);
+  };
+
+  // Touch scrub detection
+  const handleTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas || e.touches.length === 0) return;
+    updateHoveredFromClientX(e.touches[0].clientX, canvas);
   };
 
   const renderStatusBadge = (change?: { delta: number | string; status: string }) => {
@@ -474,11 +581,11 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
   };
 
   const horizonRows = [
-    { label: '3-day', data: trendData.changes?.threeDay },
-    { label: '7-day', data: trendData.changes?.sevenDay },
-    { label: '14-day', data: trendData.changes?.fourteenDay },
-    { label: '30-day', data: trendData.changes?.thirtyDay },
-    { label: '90-day', data: trendData.changes?.ninetyDay },
+    { label: '3-day', data: trendData?.changes?.threeDay },
+    { label: '7-day', data: trendData?.changes?.sevenDay },
+    { label: '14-day', data: trendData?.changes?.fourteenDay },
+    { label: '30-day', data: trendData?.changes?.thirtyDay },
+    { label: '90-day', data: trendData?.changes?.ninetyDay },
   ];
 
   return (
@@ -490,7 +597,7 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
           <div className="flex items-baseline gap-8">
             <div>
               <div className="text-xs uppercase tracking-wider text-gray-400 font-bold">
-                Average
+                {headerMetrics.averageLabel}
               </div>
               <div className="flex items-baseline gap-1 mt-1">
                 <span className="text-4xl font-black tracking-tight text-white font-mono tabular-nums">
@@ -506,7 +613,7 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
 
             <div className="border-l border-[#272930] pl-8">
               <div className="text-xs uppercase tracking-wider text-gray-400 font-bold">
-                Difference
+                {headerMetrics.differenceLabel}
               </div>
               <div className="flex items-baseline gap-1 mt-1">
                 <span className="text-4xl font-black tracking-tight text-white font-mono tabular-nums">
@@ -514,7 +621,6 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
                 </span>
                 <span className="text-base font-bold text-gray-400">kg</span>
               </div>
-              
             </div>
           </div> 
         </div>
@@ -527,8 +633,19 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
             ref={canvasRef}
             onMouseMove={handleMouseMove}
             onMouseLeave={() => setHoveredPoint(null)}
-            className="w-full h-full block cursor-crosshair rounded-xl"
+            onTouchMove={handleTouchMove}
+            onTouchEnd={() => setHoveredPoint(null)}
+            className="w-full h-full block cursor-crosshair rounded-xl touch-none"
           />
+
+          {filteredEntries.length === 0 && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pb-8">
+              <div className="px-5 py-3 rounded-2xl bg-[#1C1D22]/90 border border-[#2D2F38] text-center shadow-xl backdrop-blur-md">
+                <p className="text-sm font-semibold text-gray-200">No Weight Data in This Timeframe</p>
+                <p className="text-xs text-gray-400 mt-1">Log a weigh-in to view your trend curve</p>
+              </div>
+            </div>
+          )}
 
           {hoveredPoint && (
             <div
@@ -664,7 +781,9 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
             <div className="flex items-center gap-4 sm:gap-5 pb-4 first:pt-0">
               <div className="bg-[#22242B] border border-[#2D2F38] rounded-xl w-24 sm:w-28 h-20 flex flex-col items-center justify-center shrink-0 shadow-inner">
                 <span className="text-2xl font-bold font-mono text-white tracking-tight">
-                  {trendData.analytics?.currentWeight?.toFixed(1) ?? '78.2'}
+                  {trendData?.entries?.length && trendData?.analytics?.currentWeight
+                    ? trendData.analytics.currentWeight.toFixed(1)
+                    : '—'}
                 </span>
                 <span className="text-xs text-gray-400 font-medium mt-0.5">kg</span>
               </div>
@@ -680,11 +799,11 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
             <div className="flex items-center gap-4 sm:gap-5 py-4">
               <div className="bg-[#22242B] border border-[#2D2F38] rounded-xl w-24 sm:w-28 h-20 flex flex-col items-center justify-center shrink-0 shadow-inner">
                 <span className="text-2xl font-bold font-mono text-white tracking-tight">
-                  {trendData.analytics?.weeklyRateKg !== undefined
+                  {trendData?.entries?.length && trendData?.analytics?.weeklyRateKg != null
                     ? trendData.analytics.weeklyRateKg > 0
                       ? `+${trendData.analytics.weeklyRateKg.toFixed(2)}`
                       : `${trendData.analytics.weeklyRateKg.toFixed(2).replace('-', '−')}`
-                    : '−0.72'}
+                    : '—'}
                 </span>
                 <span className="text-[11px] text-gray-400 font-medium mt-0.5">kg per week</span>
               </div>
@@ -700,11 +819,11 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
             <div className="flex items-center gap-4 sm:gap-5 py-4">
               <div className="bg-[#22242B] border border-[#2D2F38] rounded-xl w-24 sm:w-28 h-20 flex flex-col items-center justify-center shrink-0 shadow-inner">
                 <span className="text-2xl font-bold font-mono text-white tracking-tight">
-                  {trendData.analytics?.dailyDeficitKcal !== undefined
+                  {trendData?.entries?.length && trendData?.analytics?.dailyDeficitKcal != null
                     ? trendData.analytics.dailyDeficitKcal > 0
                       ? `+${trendData.analytics.dailyDeficitKcal}`
                       : `${trendData.analytics.dailyDeficitKcal.toString().replace('-', '−')}`
-                    : '−790'}
+                    : '—'}
                 </span>
                 <span className="text-[11px] text-gray-400 font-medium mt-0.5">kcal per day</span>
               </div>
@@ -720,7 +839,9 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
             <div className="flex items-center gap-4 sm:gap-5 pt-4 last:pb-0">
               <div className="bg-[#22242B] border border-[#2D2F38] rounded-xl w-24 sm:w-28 h-20 flex flex-col items-center justify-center shrink-0 shadow-inner">
                 <span className="text-2xl font-bold font-mono text-white tracking-tight">
-                  {trendData.analytics?.projected30d?.toFixed(1) ?? '74.9'}
+                  {trendData?.entries?.length && trendData?.analytics?.projected30d != null
+                    ? trendData.analytics.projected30d.toFixed(1)
+                    : '—'}
                 </span>
                 <span className="text-xs text-gray-400 font-medium mt-0.5">kg</span>
               </div>

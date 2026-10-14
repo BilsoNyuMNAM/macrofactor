@@ -83,18 +83,18 @@ export const ScaleWeightView: React.FC<ScaleWeightViewProps> = ({
   const fetchScaleWeight = async () => {
     try {
       setLoading(true);
+      const res = await api.getScaleWeight(timeframe, aggregation);
+      setData(res);
+    } catch (err) {
+      console.warn('API getScaleWeight error, falling back to local data:', err);
       if (userEmail && !getIsDemoUser(userEmail)) {
         const onboarding = getUserOnboarding(userEmail);
         const logs = getUserLogs(userEmail, onboarding);
         const userScaleData = buildUserScaleWeightData(userEmail, onboarding, logs, timeframe, aggregation);
         setData(userScaleData);
       } else {
-        const res = await api.getScaleWeight(timeframe, aggregation);
-        setData(res);
+        onShowToast?.('Failed to load scale weight', false);
       }
-    } catch (err) {
-      console.error('Failed to load scale weight data:', err);
-      onShowToast?.('Failed to load scale weight', false);
     } finally {
       setLoading(false);
     }
@@ -297,14 +297,14 @@ export const ScaleWeightView: React.FC<ScaleWeightViewProps> = ({
             <div className="text-[13px] font-medium text-gray-400">Average</div>
             <div className="mt-0.5 flex items-baseline">
               <span className="text-[26px] sm:text-[30px] font-bold text-white tracking-tight font-sans">
-                {data?.header.average ? data.header.average.toFixed(1) : '77.6'}
+                {data?.header.average ? data.header.average.toFixed(1) : '—'}
               </span>
               <span className="text-[14px] text-gray-400 font-normal ml-1">
                 {data?.header.unit || 'kg'}
               </span>
             </div>
             <div className="text-[12px] font-medium text-gray-400 mt-0.5">
-              {data?.header.dateRangeSubtitle || '8 - 14 Oct 2026'}
+              {data?.header.dateRangeSubtitle || 'No Data in Timeframe'}
             </div>
           </div>
 
@@ -313,7 +313,7 @@ export const ScaleWeightView: React.FC<ScaleWeightViewProps> = ({
             <div className="text-[13px] font-medium text-gray-400">Difference</div>
             <div className="mt-0.5 flex items-baseline justify-center">
               <span className="text-[26px] sm:text-[30px] font-bold text-white tracking-tight font-sans">
-                {data?.header.differenceFormatted ? data.header.differenceFormatted.replace(' kg', '') : '+0.1'}
+                {data?.header.differenceFormatted ? data.header.differenceFormatted.replace(' kg', '') : '—'}
               </span>
               <span className="text-[14px] text-gray-400 font-normal ml-1">
                 {data?.header.unit || 'kg'}
@@ -337,6 +337,14 @@ export const ScaleWeightView: React.FC<ScaleWeightViewProps> = ({
 
         {/* Main Chart Area */}
         <div className="relative mt-4 sm:mt-6 select-none">
+          {chartPoints.length === 0 && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pb-8 z-10">
+              <div className="px-5 py-3 rounded-2xl bg-[#1C1D22]/90 border border-[#2D2F38] text-center shadow-xl backdrop-blur-md">
+                <p className="text-sm font-semibold text-gray-200">No Weigh-ins in This Timeframe</p>
+                <p className="text-xs text-gray-400 mt-1">Tap + to log your scale weight</p>
+              </div>
+            </div>
+          )}
           <svg
             ref={chartSvgRef}
             viewBox="0 0 800 260"

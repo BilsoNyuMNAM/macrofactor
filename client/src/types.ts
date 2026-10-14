@@ -82,9 +82,9 @@ export interface ProgramDerivation {
 export interface DashboardResponse {
   profile: UserProfile | null;
   goal: Goal | null;
-  currentWeight: number;
-  currentScaleWeight?: number;
-  currentTdee: number;
+  currentWeight: number | null;
+  currentScaleWeight?: number | null;
+  currentTdee: number | null;
   tdeeStatus: 'updating' | 'holding' | 'static';
   program: ProgramDerivation;
   schedule: CheckInSchedule;
@@ -133,7 +133,7 @@ export interface ExpenditureHistoryGroup {
 }
 
 export interface HeaderMetrics {
-  average: number;
+  average: number | null;
   differenceFormatted: string;
   rawDifference: number;
   dateRangeSubtitle: string;
@@ -149,7 +149,7 @@ export interface ExpenditureResponse {
     thirtyDay: IntervalChange;
     ninetyDay: IntervalChange;
   };
-  currentExpenditure: number;
+  currentExpenditure: number | null;
   currentStrategy: 'Updating' | 'Holding';
   flux?: {
     lower: number;
@@ -168,12 +168,12 @@ export interface WeightTrendPoint {
 }
 
 export interface TrendAnalytics {
-  currentWeight: number;
-  weeklyRateKg: number;
+  currentWeight: number | null;
+  weeklyRateKg: number | null;
   weeklyRateFormatted?: string;
-  dailyDeficitKcal: number;
+  dailyDeficitKcal: number | null;
   dailyDeficitFormatted?: string;
-  projected30d: number;
+  projected30d: number | null;
 }
 
 export interface TrendResponse {

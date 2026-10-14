@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.computeWeeklyRateOfChange = exports.computeWeightTrend = exports.interpolateScaleWeights = exports.resolveTissueEnergyDensity = exports.EXPENDITURE_WINDOW_N = exports.METABOLIC_EXPENDITURE_ALPHA = exports.WEIGHT_TREND_WINDOW_N = exports.METABOLIC_TREND_ALPHA = exports.project30DayWeightTrend = exports.processDailyAnalytics = exports.PredictionStyle = exports.MetabolicEngine = exports.DEFAULT_CONFIG = exports.WEEKDAY_SHORT = exports.WEEKDAY_NAMES = exports.KCAL_PER_KG_TISSUE_GAIN = exports.KCAL_PER_KG_TISSUE_LOSS = exports.MACROFACTOR_TREND_ALPHA = void 0;
+exports.computeWeeklyRateOfChange = exports.computeWeightTrend = exports.interpolateScaleWeights = exports.resolveTissueEnergyDensity = exports.EXPENDITURE_WINDOW_N = exports.METABOLIC_EXPENDITURE_ALPHA = exports.WEIGHT_TREND_WINDOW_N = exports.METABOLIC_TREND_ALPHA = exports.project30DayWeightTrend = exports.processDailyAnalytics = exports.PredictionStyle = exports.MetabolicEngine = exports.DEFAULT_CONFIG = exports.WEEKDAY_SHORT = exports.WEEKDAY_NAMES = exports.V3_MAX_INTERPOLATION_GAP_DAYS = exports.V3_MIN_VIABLE_TDEE_FLOOR = exports.V3_BASE_FLUX_RADIUS_HOLDING = exports.V3_BASE_FLUX_RADIUS_UPDATING = exports.V3_ADAPTIVE_GAIN_LARGE = exports.V3_ADAPTIVE_GAIN_SMALL = exports.KCAL_PER_KG_TISSUE_GAIN = exports.KCAL_PER_KG_TISSUE_LOSS = exports.KCAL_PER_KG_TISSUE_V3 = exports.MACROFACTOR_TREND_ALPHA = void 0;
 exports.isValidIntakeDay = isValidIntakeDay;
 exports.buildContinuousCalendar = buildContinuousCalendar;
 exports.executeMacroFactorPipeline = executeMacroFactorPipeline;
@@ -50,14 +50,25 @@ exports.evaluate7DayQuality = evaluate7DayQuality;
 exports.computeCheckInSchedule = computeCheckInSchedule;
 const db_js_1 = require("../db.js");
 exports.MACROFACTOR_TREND_ALPHA = 0.13;
-exports.KCAL_PER_KG_TISSUE_LOSS = 7700.0;
-exports.KCAL_PER_KG_TISSUE_GAIN = 8500.0;
+exports.KCAL_PER_KG_TISSUE_V3 = 7700.0;
+// In V3, tissue energy density is strictly symmetrical (7,700 kcal/kg for both loss and gain)
+exports.KCAL_PER_KG_TISSUE_LOSS = exports.KCAL_PER_KG_TISSUE_V3;
+exports.KCAL_PER_KG_TISSUE_GAIN = exports.KCAL_PER_KG_TISSUE_V3;
+// MacroFactor Expenditure Algorithm V3 Constants
+exports.V3_ADAPTIVE_GAIN_SMALL = 0.08;
+exports.V3_ADAPTIVE_GAIN_LARGE = 0.16;
+exports.V3_BASE_FLUX_RADIUS_UPDATING = 35;
+exports.V3_BASE_FLUX_RADIUS_HOLDING = 60;
+exports.V3_MIN_VIABLE_TDEE_FLOOR = 1000;
+exports.V3_MAX_INTERPOLATION_GAP_DAYS = 7;
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
 exports.WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 exports.WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 exports.DEFAULT_CONFIG = {
-    trendAlpha: 0.13,
-    tissueDensityKcalPerKg: 7700,
-    baselineTdee: 2340
+    trendAlpha: exports.MACROFACTOR_TREND_ALPHA,
+    tissueDensityKcalPerKg: exports.KCAL_PER_KG_TISSUE_V3,
+    baselineTdee: 2340,
+    staticTdeeOverride: null
 };
 /**
  * Helper to determine if a day has valid intake for TDEE and safeguards
@@ -70,7 +81,7 @@ function isValidIntakeDay(d) {
     return d.calories !== null && d.calories > 0;
 }
 /**
- * 1. Build a continuous calendar sequence without date gaps from earliest log to latest log.
+ * Build a continuous calendar sequence without date gaps from earliest log to latest log.
  */
 function buildContinuousCalendar(logs) {
     if (logs.length === 0)
@@ -87,20 +98,26 @@ function buildContinuousCalendar(logs) {
             continuous.push(map.get(iso));
         }
         else {
-            continuous.push({ date: iso, scaleWeight: null, calories: null, isFasting: false, isPartial: false });
+            continuous.push({
+                date: iso,
+                scaleWeight: null,
+                calories: null,
+                isFasting: false,
+                isPartial: false
+            });
         }
     }
     return continuous;
 }
 /**
- * 2. Main MacroFactor Pipeline:
- * - Pass 1: Piecewise linear interpolation for scale weights (gap fill and flat trailing edge)
- * - Pass 2: Exponential moving average (alpha ~ 0.13) with trailing edge hold and velocity decay
- * - Pass 3: Dynamic expenditure engine with 4-of-7 nutrition, 1-of-7 weigh-in, trailing gap safeguards,
- *           and state-space adaptive damping.
- * - Dynamic Flux corridor and noise envelope.
+ * 2. Main MacroFactor V3 Pipeline:
+ * Pass 1: Piecewise linear interpolation for scale weights (with >7-day hiatus flat hold and trailing edge flat hold)
+ * Pass 2: Exponential moving average (alpha = 0.13) with trailing edge hold and velocity decay
+ * Pass 3: Dynamic Expenditure V3 engine with Velocity-Inversion Caloric Imputation,
+ *         4-of-7 nutrition compliance, 1-of-7 weigh-in compliance, 3-day consecutive recovery,
+ *         symmetrical 7,700 kcal/kg mass-balance solver, adaptive trajectory damping, and 1,000 kcal floor.
  */
-function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightKg = 78.0, trendAlpha = exports.MACROFACTOR_TREND_ALPHA) {
+function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightKg = 78.0, trendAlpha = exports.MACROFACTOR_TREND_ALPHA, staticTdeeOverride = null) {
     const continuous = buildContinuousCalendar(rawLogs);
     if (continuous.length === 0)
         return [];
@@ -108,9 +125,11 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
     const processed = [];
     // --- PASS 1: PIECEWISE LINEAR INTERPOLATION FOR SCALE WEIGHT ---
     const interpolatedWeights = new Array(n);
+    const isLongWeightHiatus = new Array(n).fill(false);
     const firstWeightIdx = continuous.findIndex(l => l.scaleWeight !== null && !isNaN(l.scaleWeight));
     if (firstWeightIdx === -1) {
         interpolatedWeights.fill(initialWeightKg);
+        isLongWeightHiatus.fill(true);
     }
     else {
         // Fill backwards from first known weigh-in
@@ -121,10 +140,22 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
         for (let i = firstWeightIdx + 1; i < n; i++) {
             if (continuous[i].scaleWeight !== null && !isNaN(continuous[i].scaleWeight)) {
                 const gap = i - lastKnownIdx;
+                const missingDaysBetween = gap - 1;
                 const startW = continuous[lastKnownIdx].scaleWeight;
                 const endW = continuous[i].scaleWeight;
-                for (let j = lastKnownIdx; j < i; j++) {
-                    interpolatedWeights[j] = startW + ((endW - startW) / gap) * (j - lastKnownIdx);
+                if (missingDaysBetween > exports.V3_MAX_INTERPOLATION_GAP_DAYS) {
+                    // Spec Section 2.3: Missing Scale Weigh-ins (>7 Days) holds flat at last known weight
+                    for (let j = lastKnownIdx; j < i; j++) {
+                        interpolatedWeights[j] = startW;
+                        if (j - lastKnownIdx > exports.V3_MAX_INTERPOLATION_GAP_DAYS) {
+                            isLongWeightHiatus[j] = true;
+                        }
+                    }
+                }
+                else {
+                    for (let j = lastKnownIdx; j < i; j++) {
+                        interpolatedWeights[j] = startW + ((endW - startW) / gap) * (j - lastKnownIdx);
+                    }
                 }
                 lastKnownIdx = i;
             }
@@ -132,6 +163,9 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
         // Trailing edge: hold flat from last known weigh-in forward (no unverified velocity extrapolation)
         for (let i = lastKnownIdx; i < n; i++) {
             interpolatedWeights[i] = continuous[lastKnownIdx].scaleWeight;
+            if (i - lastKnownIdx > exports.V3_MAX_INTERPOLATION_GAP_DAYS) {
+                isLongWeightHiatus[i] = true;
+            }
         }
     }
     // --- PASS 2: EXPONENTIAL MOVING AVERAGE (EMA) WEIGHT TREND WITH TRAILING EDGE HOLD ---
@@ -146,10 +180,15 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
     const trendWeights = new Array(n);
     const velocities = new Array(n);
     for (let i = 0; i < n; i++) {
-        // Trailing edge rule (Section 3.1):
-        // "If the user has not weighed in today or yesterday, the trend weight holds flat at the last calculated value with decay toward zero velocity."
         const isTrailingEdgeGap = lastActualWeighInIdx !== -1 && (i - lastActualWeighInIdx >= 2);
-        if (isTrailingEdgeGap && i > 0) {
+        if (isLongWeightHiatus[i] && i > 0) {
+            // >7 days without scale weigh-ins: hold flat at last trend weight with zero velocity
+            trendWeights[i] = trendWeights[i - 1];
+            currentTrend = trendWeights[i];
+            velocities[i] = 0;
+        }
+        else if (isTrailingEdgeGap && i > 0) {
+            // Trailing edge hold with velocity decay toward zero
             trendWeights[i] = trendWeights[i - 1];
             currentTrend = trendWeights[i];
             velocities[i] = Math.round(velocities[i - 1] * 0.7 * 1000) / 1000;
@@ -159,7 +198,7 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
         else {
             currentTrend = (trendAlpha * interpolatedWeights[i]) + ((1 - trendAlpha) * currentTrend);
             trendWeights[i] = Math.round(currentTrend * 100) / 100;
-            // 7-day velocity span (Section 3.3)
+            // 7-day velocity span: V_t = (T_t - T_{t-7}) / 7
             const lookback = Math.min(i, 7);
             if (lookback === 0) {
                 velocities[i] = 0;
@@ -170,15 +209,14 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
         }
     }
     // --- PASS 3: DYNAMIC EXPENDITURE ENGINE WITH MACROFACTOR V3 ADAPTIVE MODEL ---
-    let runningTdee = baselineTdee;
-    let lastActiveDelta = 0;
+    let runningTdee = staticTdeeOverride ?? Math.max(exports.V3_MIN_VIABLE_TDEE_FLOOR, baselineTdee);
     let consecutiveMissingIntake = 0;
     let consecutiveLoggedIntake = 0;
-    let inHolding = true; // Cold start starts in holding
+    let inHolding = true; // Cold start begins in Holding on Days 1 & 2
+    const imputedIntakes = new Array(n).fill(null);
     for (let i = 0; i < n; i++) {
         const item = continuous[i];
         const isFasting = !!item.isFasting;
-        const isPartial = !!item.isPartial;
         const isValidIntake = isValidIntakeDay(item);
         if (isValidIntake) {
             consecutiveMissingIntake = 0;
@@ -188,79 +226,111 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
             consecutiveMissingIntake++;
             consecutiveLoggedIntake = 0;
         }
-        // Evaluate rolling 7 calendar days [i - 6, i] for weigh-in compliance
+        // Evaluate rolling 7 calendar days [windowStart, i] for compliance
         const windowStart = Math.max(0, i - 6);
         const windowSlice = continuous.slice(windowStart, i + 1);
         let validIntakeCount = 0;
         let weighInCount = 0;
-        windowSlice.forEach(day => {
+        for (const day of windowSlice) {
             if (day.scaleWeight !== null && !isNaN(day.scaleWeight)) {
                 weighInCount++;
             }
             if (isValidIntakeDay(day)) {
                 validIntakeCount++;
             }
-        });
+        }
+        // MacroFactor V3 Caloric Imputation on Missing Days (Velocity-Inversion Solver):
+        // \hat{I}_k = TDEE_{k-1} + (V_k * 7700)
+        let dayImputedIntake = null;
+        if (!isValidIntake) {
+            const prevTdee = i > 0 ? runningTdee : baselineTdee;
+            const expectedImputed = Math.round(prevTdee + (velocities[i] * exports.KCAL_PER_KG_TISSUE_V3));
+            dayImputedIntake = Math.max(0, expectedImputed);
+            imputedIntakes[i] = dayImputedIntake;
+        }
         // MacroFactor V3 Safeguard & Recovery State Machine:
-        // 1. Cold start: First 3 days held at baseline while collecting initial observations.
-        // 2. Resuming from a Hold (The "3-Day" Recovery Rule):
-        //    When in Holding (e.g., following a tracking hiatus), the algorithm requires 3 consecutive
-        //    days of complete nutrition logs (consecutiveLoggedIntake >= 3) PLUS at least one scale
-        //    weight entry in the rolling 7-day window (weighInCount >= 1) before unpausing.
+        // 1. Cold start: Days 1 & 2 (indices 0 and 1) held at baseline. Day 3 (index 2) unlocks.
+        // 2. Resuming from a Hold (3-Day Recovery Rule):
+        //    Requires 3 consecutive days of complete nutrition logs (consecutiveLoggedIntake >= 3)
+        //    PLUS at least 1 weigh-in in the rolling 7-day window (weighInCount >= 1).
         // 3. Entering Holding:
-        //    Triggered when 7 consecutive days lack intake logs or when weigh-in frequency drops to 0 across the rolling 7-day window.
-        const isColdStart = i < 3;
-        if (isColdStart) {
+        //    Triggered when validIntakeCount < 4, weighInCount === 0, or consecutiveMissingIntake >= 7.
+        const isColdStart = i < 2;
+        if (staticTdeeOverride !== null && staticTdeeOverride !== undefined) {
+            inHolding = false;
+        }
+        else if (isColdStart) {
             inHolding = true;
         }
         else if (inHolding) {
-            if (consecutiveLoggedIntake >= 3 && weighInCount >= 1) {
+            // On Day 3 (index 2), unlock if compliant; otherwise enforce 3-day consecutive recovery rule
+            if (i === 2 && validIntakeCount >= 2 && weighInCount >= 1 && consecutiveMissingIntake === 0) {
+                inHolding = false;
+            }
+            else if (consecutiveLoggedIntake >= 3 && weighInCount >= 1) {
                 inHolding = false;
             }
         }
         else {
-            if (consecutiveMissingIntake >= 7 || (weighInCount === 0 && i >= 6)) {
+            if (validIntakeCount < 4 || weighInCount === 0 || consecutiveMissingIntake >= 7) {
                 inHolding = true;
             }
         }
-        const isHolding = inHolding;
+        const strategy = staticTdeeOverride !== null && staticTdeeOverride !== undefined
+            ? 'static'
+            : inHolding
+                ? 'holding'
+                : 'updating';
+        const isHolding = strategy === 'holding';
         let delta = 0;
-        if (isHolding) {
+        if (strategy === 'static') {
+            runningTdee = Math.max(exports.V3_MIN_VIABLE_TDEE_FLOOR, Math.round(staticTdeeOverride));
             delta = 0;
-            lastActiveDelta = 0;
-            // runningTdee remains constant
-            // Coasting / Uncertainty Decay:
-            // When intake logging is temporarily missing, MacroFactor does not freeze immediately.
-            // It smoothly tapers the last active delta towards zero as information uncertainty increases.
-            // Day 1: 1.00, Day 2: 0.70, Day 3: 0.44, Day 4: 0.44, Day 5: 0.18, Day 6: 0.14, Day 7: Holding
-            const decayFactors = [1.0, 0.70, 0.44, 0.44, 0.18, 0.14, 0.0];
-            const factorIdx = Math.max(0, Math.min(consecutiveMissingIntake - 1, decayFactors.length - 1));
-            const factor = decayFactors[factorIdx];
-            delta = Math.round(lastActiveDelta * factor);
-            runningTdee += delta;
+        }
+        else if (isHolding) {
+            // In Holding state, TDEE is strictly frozen at the previous day's baseline
+            delta = 0;
         }
         else {
-            // Rolling intake over a stable window (up to 10-12 days)
-            const intakeLookback = continuous.slice(Math.max(0, i - 10), i + 1).filter(isValidIntakeDay);
-            const sumCalories = intakeLookback.reduce((sum, d) => sum + (d.isFasting ? 0 : (d.calories ?? 0)), 0);
-            const avgIntake = intakeLookback.length > 0 ? (sumCalories / intakeLookback.length) : runningTdee;
-            // Effective tissue energy density:
-            // Accounts for glycogen and water depletion in early deficit phases (~4500 kcal/kg effective density).
-            const effectiveDensity = 4500;
-            const dailyFlux = velocities[i] * effectiveDensity;
-            const rawDemand = Math.round(avgIntake - dailyFlux);
+            // Rolling mean intake over trailing window [windowStart, i]:
+            // Combines verified logged calories with velocity-inversion imputed calories for skipped days
+            let sumIntake = 0;
+            for (let k = windowStart; k <= i; k++) {
+                if (isValidIntakeDay(continuous[k])) {
+                    sumIntake += continuous[k].isFasting ? 0 : (continuous[k].calories ?? 0);
+                }
+                else {
+                    sumIntake += (imputedIntakes[k] ?? runningTdee);
+                }
+            }
+            const windowDays = i - windowStart + 1;
+            const avgIntake = sumIntake / windowDays;
+            // Symmetrical Thermodynamic Solver (V3):
+            // TDEE_raw = avgIntake - (V_t * 7,700)
+            const rawDemand = avgIntake - (velocities[i] * exports.KCAL_PER_KG_TISSUE_V3);
             const rawGap = rawDemand - runningTdee;
-            // Adaptive Gain:
-            // Smooth adaptive gain ramping gently from cold-start (0.016) up to mature state (0.035)
-            const ramp = Math.min(1.0, i / 25);
-            const adaptiveGain = 0.016 + ramp * 0.018;
-            delta = Math.round(rawGap * adaptiveGain);
-            // Trajectory safety limit (prevents extreme single-day outliers exceeding +-7 kcal)
-            delta = Math.max(-7, Math.min(7, delta));
-            lastActiveDelta = delta;
-            runningTdee += delta;
+            // Adaptive Trajectory Damping (V3):
+            // Small noisy fluctuations (|rawGap| <= 150): K = 0.08
+            // Sustained directional shifts (|rawGap| > 250): K = 0.16
+            // Smooth linear transition between 150 and 250
+            const absGap = Math.abs(rawGap);
+            let adaptiveGain = exports.V3_ADAPTIVE_GAIN_SMALL;
+            if (absGap > 250) {
+                adaptiveGain = exports.V3_ADAPTIVE_GAIN_LARGE;
+            }
+            else if (absGap > 150) {
+                adaptiveGain =
+                    exports.V3_ADAPTIVE_GAIN_SMALL +
+                        ((absGap - 150) / 100) * (exports.V3_ADAPTIVE_GAIN_LARGE - exports.V3_ADAPTIVE_GAIN_SMALL);
+            }
+            const rawDelta = Math.round(rawGap * adaptiveGain);
+            const unclampedTdee = runningTdee + rawDelta;
+            // Physiological Safety Floor (Spec Section 2.3): Clamp TDEE at 1,000 kcal
+            const nextTdee = Math.max(exports.V3_MIN_VIABLE_TDEE_FLOOR, unclampedTdee);
+            delta = nextTdee - runningTdee;
+            runningTdee = nextTdee;
         }
-        // Weight residual variance (RMSE) over 14-day window (Section 4.4)
+        // Weight residual variance (RMSE) over 14-day window (Section 2.2 #6)
         const varStart = Math.max(0, i - 13);
         let sqResidualSum = 0;
         let rawWeightCount = 0;
@@ -272,17 +342,22 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
             }
         }
         const weightRmse = rawWeightCount > 0 ? Math.sqrt(sqResidualSum / rawWeightCount) : 0.25;
-        // Dynamic Flux Range calculation (Section 4.4):
+        // Dynamic Flux Range calculation (Section 2.2 #6):
         // FluxRadius = BaseRadius * (1 + sigma_weight / 0.5) * (7 / N_logged)
-        const baseFluxRadius = isHolding ? 60 : 35;
+        const baseFluxRadius = isHolding ? exports.V3_BASE_FLUX_RADIUS_HOLDING : exports.V3_BASE_FLUX_RADIUS_UPDATING;
         const weightNoiseFactor = 1 + (weightRmse / 0.5);
         const densityRatio = 7 / Math.max(validIntakeCount, 1);
-        let dynamicFluxRadius = Math.round(baseFluxRadius * (0.6 + 0.4 * weightNoiseFactor) * (0.7 + 0.3 * (densityRatio / 1.75)));
-        dynamicFluxRadius = isHolding
-            ? Math.max(60, Math.min(140, dynamicFluxRadius))
-            : Math.max(30, Math.min(95, dynamicFluxRadius));
+        const dynamicFluxRadius = Math.round(baseFluxRadius * weightNoiseFactor * densityRatio);
         const fluxUpper = runningTdee + dynamicFluxRadius;
-        const fluxLower = runningTdee - dynamicFluxRadius;
+        const fluxLower = Math.max(0, runningTdee - dynamicFluxRadius);
+        // Statistical Confidence Score in [0.0, 1.0] (Spec Section 1.1 #3)
+        const intakeConfidence = Math.min(1, validIntakeCount / 7);
+        const weightConfidence = Math.min(1, weighInCount / 3);
+        const noisePenalty = Math.max(0.5, 1 - (weightRmse / 2.0));
+        const rawConfidence = (intakeConfidence * 0.6 + weightConfidence * 0.4) * noisePenalty;
+        const confidenceScore = isColdStart
+            ? 0.25
+            : Math.round(Math.max(0, Math.min(1, rawConfidence)) * 100) / 100;
         const noiseBand = Math.round(Math.max(0.2, Math.min(0.8, weightRmse)) * 10) / 10;
         const noiseRangeLower = Math.round((trendWeights[i] - noiseBand) * 10) / 10;
         const noiseRangeUpper = Math.round((trendWeights[i] + noiseBand) * 10) / 10;
@@ -293,13 +368,18 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
             trendWeight: trendWeights[i],
             weightVelocityKgPerDay: velocities[i],
             rawIntake: isFasting ? 0 : item.calories,
+            imputedIntake: dayImputedIntake,
             isFasting,
             isValidIntake,
             tdee: runningTdee,
             tdeeDelta: delta,
             fluxUpper,
             fluxLower,
+            fluxRadius: dynamicFluxRadius,
+            strategy,
             isHolding,
+            isColdStart,
+            confidenceScore,
             noiseRangeLower,
             noiseRangeUpper
         });
@@ -307,15 +387,15 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
     return processed;
 }
 /**
- * 3. Program Solver: Generates locked weekly macro targets according to Section 6.2 & 7.
+ * 3. Program Solver: Generates locked weekly macro targets using V3 symmetrical tissue density.
  */
 function solveWeeklyNutritionProgram(latestTdee, latestTrendWeightKg, goalRatePercentBwPerWeek, // e.g. -0.50 for -0.5% BW loss/week
 targetWeightKg, biologicalSex = 'male', proteinGramsPerKg = 2.0, dietStyle = 'balanced') {
-    // 1. Deficit Calculation
+    // 1. Symmetrical Deficit/Surplus Calculation (7,700 kcal/kg)
     const weeklyWeightDeltaKg = latestTrendWeightKg * (goalRatePercentBwPerWeek / 100.0);
-    const dailyCalorieDeficit = Math.round((weeklyWeightDeltaKg * exports.KCAL_PER_KG_TISSUE_LOSS) / 7.0);
+    const dailyCalorieDeficit = Math.round((weeklyWeightDeltaKg * exports.KCAL_PER_KG_TISSUE_V3) / 7.0);
     // 2. Calorie Floor (1,200 kcal for females, 1,500 kcal for males)
-    const minFloor = biologicalSex === 'female' ? 1200 : 1500;
+    const minFloor = biologicalSex.toLowerCase() === 'female' ? 1200 : 1500;
     let targetCalories = latestTdee + dailyCalorieDeficit;
     targetCalories = Math.max(minFloor, targetCalories);
     // 3. Protein Allocation
@@ -330,7 +410,7 @@ targetWeightKg, biologicalSex = 'male', proteinGramsPerKg = 2.0, dietStyle = 'ba
     if (dietStyle === 'keto')
         fatPct = 0.70;
     const minFatGrams = Math.round(latestTrendWeightKg * 0.6); // Essential lipid floor
-    let fatGrams = Math.max(minFatGrams, Math.round((targetCalories * fatPct) / 9.0));
+    const fatGrams = Math.max(minFatGrams, Math.round((targetCalories * fatPct) / 9.0));
     const fatCalories = fatGrams * 9;
     // 5. Carbohydrates (Exact Closure)
     const remainingCals = targetCalories - (proteinCalories + fatCalories);
@@ -345,7 +425,11 @@ targetWeightKg, biologicalSex = 'male', proteinGramsPerKg = 2.0, dietStyle = 'ba
         const days = Math.round(weeksToGoal * 7);
         const end = new Date();
         end.setDate(end.getDate() + days);
-        estimatedEndDateStr = end.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+        estimatedEndDateStr = end.toLocaleDateString('en-GB', {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric'
+        });
     }
     return {
         calories: targetCalories,
@@ -405,7 +489,7 @@ function calculateGoalEta(currentTrendWeightKg, targetWeightKg, weeklyRateKg, st
         };
     }
     const remainingDeltaKg = Math.max(0, Number(Math.abs(currentTrendWeightKg - targetWeightKg).toFixed(2)));
-    const anchorWeight = (startTrendWeightKg !== null && startTrendWeightKg !== undefined)
+    const anchorWeight = startTrendWeightKg !== null && startTrendWeightKg !== undefined
         ? startTrendWeightKg
         : currentTrendWeightKg;
     const totalDeltaKg = Number(Math.abs(anchorWeight - targetWeightKg).toFixed(2));
@@ -443,19 +527,14 @@ function calculateGoalEta(currentTrendWeightKg, targetWeightKg, weeklyRateKg, st
 }
 /**
  * Solves comprehensive goal metrics, rate velocity, calorie deficit, floor warnings, and projections.
+ * Uses V3 symmetrical energy density (7,700 kcal/kg) for both weight loss and weight gain.
  */
 function solveGoalMetrics(currentTdee, currentTrendWeightKg, weeklyRatePercent, targetWeightKg, biologicalSex = 'male', startTrendWeightKg) {
     const absRatePct = Math.abs(weeklyRatePercent);
     const weeklyRateKg = Number(((absRatePct / 100.0) * currentTrendWeightKg).toFixed(2));
-    let dailyDeficitKcal = 0;
-    if (weeklyRatePercent < 0) {
-        // Loss
-        dailyDeficitKcal = Math.round((weeklyRatePercent / 100.0 * currentTrendWeightKg * exports.KCAL_PER_KG_TISSUE_LOSS) / 7.0);
-    }
-    else if (weeklyRatePercent > 0) {
-        // Gain
-        dailyDeficitKcal = Math.round((weeklyRatePercent / 100.0 * currentTrendWeightKg * exports.KCAL_PER_KG_TISSUE_GAIN) / 7.0);
-    }
+    const dailyDeficitKcal = weeklyRatePercent === 0
+        ? 0
+        : Math.round(((weeklyRatePercent / 100.0) * currentTrendWeightKg * exports.KCAL_PER_KG_TISSUE_V3) / 7.0);
     const projectedTargetCalories = currentTdee + dailyDeficitKcal;
     const calorieFloorWarning = evaluateCalorieFloors(projectedTargetCalories, biologicalSex);
     let classificationBand = 'moderate';
@@ -486,7 +565,7 @@ function solveGoalMetrics(currentTdee, currentTrendWeightKg, weeklyRatePercent, 
     };
 }
 /**
- * 4. Header Metrics: Computes the "Average" and "Difference" across active timeframes according to Section 6.1.
+ * 4. Header Metrics: Computes the "Average" and "Difference" across active timeframes.
  */
 function calculateHeaderMetrics(processedDays, timeframe = '1W') {
     if (processedDays.length === 0)
@@ -552,7 +631,7 @@ function calculateHeaderMetrics(processedDays, timeframe = '1W') {
     };
 }
 /**
- * 5. Multi-Horizon Changes (3d, 7d, 14d, 30d, 90d) with Waiting Prerequisites according to Section 6.2.
+ * 5. Multi-Horizon Changes (3d, 7d, 14d, 30d, 90d) with Waiting Prerequisites.
  */
 function calculateMultiHorizonChanges(processedDays) {
     const horizons = [3, 7, 14, 30, 90];
@@ -561,7 +640,7 @@ function calculateMultiHorizonChanges(processedDays) {
     const latest = processedDays[processedDays.length - 1];
     const earliestDate = new Date(processedDays[0].date + 'T00:00:00Z');
     const latestDate = new Date(latest.date + 'T00:00:00Z');
-    const totalCalendarSpanDays = Math.round((latestDate.getTime() - earliestDate.getTime()) / (1000 * 60 * 60 * 24));
+    const totalCalendarSpanDays = Math.round((latestDate.getTime() - earliestDate.getTime()) / MS_PER_DAY);
     return horizons.map(h => {
         const label = `${h}-day`;
         if (totalCalendarSpanDays < h) {
@@ -633,7 +712,7 @@ function calculateMultiHorizonChanges(processedDays) {
     });
 }
 /**
- * 6. Typical Weekly Rate & Energy Deficit (21-Day / 3-Week Anchor) according to Section 6.3.
+ * 6. Typical Weekly Rate & Energy Deficit (21-Day / 3-Week Anchor).
  */
 function calculate21DayTypicalMetrics(processedDays) {
     if (processedDays.length < 2)
@@ -650,10 +729,10 @@ function calculate21DayTypicalMetrics(processedDays) {
     }
     const d1 = new Date(anchor.date + 'T00:00:00Z');
     const d2 = new Date(latest.date + 'T00:00:00Z');
-    const daysDiff = Math.max(1, Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24)));
+    const daysDiff = Math.max(1, Math.round((d2.getTime() - d1.getTime()) / MS_PER_DAY));
     const massDelta = latest.trendWeight - anchor.trendWeight;
     const weeklyRateKg = Math.round(((massDelta / daysDiff) * 7.0) * 100) / 100;
-    const dailyDeficitKcal = Math.round((weeklyRateKg * exports.KCAL_PER_KG_TISSUE_LOSS) / 7.0);
+    const dailyDeficitKcal = Math.round((weeklyRateKg * exports.KCAL_PER_KG_TISSUE_V3) / 7.0);
     const projected30dKg = Math.round((latest.trendWeight + ((weeklyRateKg / 7.0) * 30.0)) * 10) / 10;
     return {
         currentTrendWeightKg: latest.trendWeight,
@@ -665,7 +744,7 @@ function calculate21DayTypicalMetrics(processedDays) {
     };
 }
 /**
- * 7. Re-runs the full MacroFactor pipeline and persists calculations to PostgreSQL:
+ * 7. Re-runs the full MacroFactor V3 pipeline and persists calculations to PostgreSQL in a batched transaction.
  */
 async function recalculatePipeline() {
     // 1. Fetch Profile & Baseline
@@ -682,12 +761,10 @@ async function recalculatePipeline() {
         });
     }
     // 2. Fetch Scale Weights and Daily Nutrition Rollups
-    const scaleEntries = await db_js_1.prisma.scaleWeightEntry.findMany({
-        orderBy: { loggedAt: 'asc' }
-    });
-    const nutritionRollups = await db_js_1.prisma.dailyNutritionRollup.findMany({
-        orderBy: { logDate: 'asc' }
-    });
+    const [scaleEntries, nutritionRollups] = await Promise.all([
+        db_js_1.prisma.scaleWeightEntry.findMany({ orderBy: { loggedAt: 'asc' } }),
+        db_js_1.prisma.dailyNutritionRollup.findMany({ orderBy: { logDate: 'asc' } })
+    ]);
     const scaleByDate = new Map();
     for (const entry of scaleEntries) {
         scaleByDate.set(entry.logDate, entry.weightKg);
@@ -706,6 +783,10 @@ async function recalculatePipeline() {
     nutritionByDate.forEach((_, date) => allDatesSet.add(date));
     const sortedDates = Array.from(allDatesSet).sort((a, b) => a.localeCompare(b));
     if (sortedDates.length === 0) {
+        await db_js_1.prisma.$transaction([
+            db_js_1.prisma.weightTrendEntry.deleteMany(),
+            db_js_1.prisma.tdeeEntry.deleteMany()
+        ]);
         return;
     }
     const rawInputs = sortedDates.map(date => {
@@ -719,9 +800,18 @@ async function recalculatePipeline() {
         };
     });
     const processed = executeMacroFactorPipeline(rawInputs, profile.baselineTdee || 2340, profile.initialWeightKg || 78.0);
-    // 3. Persist to DB in Upserts
-    for (const item of processed) {
-        await db_js_1.prisma.weightTrendEntry.upsert({
+    const processedDates = processed.map(item => item.date);
+    // 3. Persist to DB using a batched Prisma transaction:
+    // First prune any stale dates that no longer exist in the pipeline output,
+    // then upsert current processed dates.
+    await db_js_1.prisma.$transaction([
+        db_js_1.prisma.weightTrendEntry.deleteMany({
+            where: { logDate: { notIn: processedDates } }
+        }),
+        db_js_1.prisma.tdeeEntry.deleteMany({
+            where: { logDate: { notIn: processedDates } }
+        }),
+        ...processed.map(item => db_js_1.prisma.weightTrendEntry.upsert({
             where: { logDate: item.date },
             create: {
                 logDate: item.date,
@@ -729,21 +819,22 @@ async function recalculatePipeline() {
                 velocityKgPerDay: item.weightVelocityKgPerDay,
                 noiseRangeLowerKg: item.noiseRangeLower,
                 noiseRangeUpperKg: item.noiseRangeUpper,
-                algorithmVersion: 'v2_kalman'
+                algorithmVersion: 'v3'
             },
             update: {
                 trendWeightKg: item.trendWeight,
                 velocityKgPerDay: item.weightVelocityKgPerDay,
                 noiseRangeLowerKg: item.noiseRangeLower,
-                noiseRangeUpperKg: item.noiseRangeUpper
+                noiseRangeUpperKg: item.noiseRangeUpper,
+                algorithmVersion: 'v3'
             }
-        });
-        await db_js_1.prisma.tdeeEntry.upsert({
+        })),
+        ...processed.map(item => db_js_1.prisma.tdeeEntry.upsert({
             where: { logDate: item.date },
             create: {
                 logDate: item.date,
                 expenditureKcal: item.tdee,
-                status: item.isHolding ? 'holding' : 'updating',
+                status: item.strategy,
                 tdeeDeltaKcal: item.tdeeDelta,
                 fluxLowerKcal: item.fluxLower,
                 fluxUpperKcal: item.fluxUpper,
@@ -751,13 +842,14 @@ async function recalculatePipeline() {
             },
             update: {
                 expenditureKcal: item.tdee,
-                status: item.isHolding ? 'holding' : 'updating',
+                status: item.strategy,
                 tdeeDeltaKcal: item.tdeeDelta,
                 fluxLowerKcal: item.fluxLower,
-                fluxUpperKcal: item.fluxUpper
+                fluxUpperKcal: item.fluxUpper,
+                algorithmVersion: 'v3'
             }
-        });
-    }
+        }))
+    ]);
     // 4. Ensure active weekly plan exists
     const activePlan = await db_js_1.prisma.weeklyPlan.findFirst({
         where: { isActive: true },
@@ -800,24 +892,24 @@ async function recalculatePipeline() {
                 isActive: true
             }
         });
-        for (let day = 0; day <= 6; day++) {
-            await db_js_1.prisma.dailyCalorieTarget.create({
-                data: {
-                    planId: createdPlan.planId,
-                    dayOfWeek: day,
-                    targetCalories: solved.calories
-                }
-            });
-        }
+        await db_js_1.prisma.$transaction(Array.from({ length: 7 }, (_, day) => db_js_1.prisma.dailyCalorieTarget.create({
+            data: {
+                planId: createdPlan.planId,
+                dayOfWeek: day,
+                targetCalories: solved.calories
+            }
+        })));
     }
 }
 /**
- * 8. 7-Day compliance evaluator according to Section 5.1 & 7
+ * 8. 7-Day compliance evaluator synchronized with V3 Holding & 3-Day Recovery rules.
  */
 async function evaluate7DayQuality() {
-    // Find latest logged date across weights and nutrition
-    const latestWeight = await db_js_1.prisma.scaleWeightEntry.findFirst({ orderBy: { logDate: 'desc' } });
-    const latestNutrition = await db_js_1.prisma.dailyNutritionRollup.findFirst({ orderBy: { logDate: 'desc' } });
+    const [latestWeight, latestNutrition, latestTdeeEntry] = await Promise.all([
+        db_js_1.prisma.scaleWeightEntry.findFirst({ orderBy: { logDate: 'desc' } }),
+        db_js_1.prisma.dailyNutritionRollup.findFirst({ orderBy: { logDate: 'desc' } }),
+        db_js_1.prisma.tdeeEntry.findFirst({ orderBy: { logDate: 'desc' } })
+    ]);
     const latestStr = [latestWeight?.logDate, latestNutrition?.logDate]
         .filter(Boolean)
         .sort()
@@ -829,26 +921,28 @@ async function evaluate7DayQuality() {
         d.setUTCDate(d.getUTCDate() - i);
         calendarDates.push(d.toISOString().split('T')[0]);
     }
-    const rollups = await db_js_1.prisma.dailyNutritionRollup.findMany({
-        where: { logDate: { in: calendarDates } }
-    });
+    const [rollups, weights] = await Promise.all([
+        db_js_1.prisma.dailyNutritionRollup.findMany({ where: { logDate: { in: calendarDates } } }),
+        db_js_1.prisma.scaleWeightEntry.findMany({ where: { logDate: { in: calendarDates } } })
+    ]);
     const rollupMap = new Map(rollups.map(r => [r.logDate, r]));
-    const weights = await db_js_1.prisma.scaleWeightEntry.findMany({
-        where: { logDate: { in: calendarDates } }
-    });
     const weightMap = new Map(weights.map(w => [w.logDate, w]));
     let nutritionDays = 0;
     let weightDays = 0;
+    let trailingConsecutiveNutrition = 0;
     const partialDays = [];
     for (const date of calendarDates) {
         const r = rollupMap.get(date);
-        if (r) {
-            if (r.isPartial) {
-                partialDays.push(date);
-            }
-            else if (r.totalCaloriesKcal > 0 || r.isFasting) {
-                nutritionDays++;
-            }
+        const isCompleteNutrition = !!r && !r.isPartial && (r.totalCaloriesKcal > 0 || r.isFasting);
+        if (r?.isPartial) {
+            partialDays.push(date);
+        }
+        if (isCompleteNutrition) {
+            nutritionDays++;
+            trailingConsecutiveNutrition++;
+        }
+        else {
+            trailingConsecutiveNutrition = 0;
         }
         if (weightMap.has(date)) {
             weightDays++;
@@ -856,7 +950,17 @@ async function evaluate7DayQuality() {
     }
     const meetsNutrition = nutritionDays >= 4;
     const meetsWeight = weightDays >= 1;
-    const isHolding = !meetsNutrition || !meetsWeight;
+    // Synchronize with persisted V3 state machine (respects Cold Start and 3-Day Consecutive Recovery)
+    let isHolding;
+    if (latestTdeeEntry && latestTdeeEntry.logDate === latestStr) {
+        isHolding = latestTdeeEntry.status === 'holding';
+    }
+    else {
+        const wasPreviouslyHolding = latestTdeeEntry ? latestTdeeEntry.status === 'holding' : true;
+        isHolding = wasPreviouslyHolding
+            ? !(trailingConsecutiveNutrition >= 3 && meetsWeight)
+            : (!meetsNutrition || !meetsWeight);
+    }
     return {
         nutritionDays,
         weightDays,
@@ -882,16 +986,16 @@ async function computeCheckInSchedule() {
     if (lastCheckin?.checkinDate) {
         const lastDate = new Date(lastCheckin.checkinDate);
         lastDate.setHours(0, 0, 0, 0);
-        let candidate = new Date(lastDate);
+        const candidate = new Date(lastDate);
         candidate.setDate(candidate.getDate() + 1);
         while (candidate.getDay() !== checkInDay ||
-            Math.round((candidate.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24)) < 4) {
+            Math.round((candidate.getTime() - lastDate.getTime()) / MS_PER_DAY) < 4) {
             candidate.setDate(candidate.getDate() + 1);
         }
         nextDate = candidate;
     }
     else {
-        let candidate = new Date(today);
+        const candidate = new Date(today);
         if (candidate.getDay() === checkInDay) {
             nextDate = candidate;
         }
@@ -902,7 +1006,7 @@ async function computeCheckInSchedule() {
         }
     }
     const diffTime = nextDate.getTime() - today.getTime();
-    const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+    const diffDays = Math.round(diffTime / MS_PER_DAY);
     let state = 'upcoming';
     if (diffDays > 2) {
         state = 'upcoming';

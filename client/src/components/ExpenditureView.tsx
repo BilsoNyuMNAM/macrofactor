@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   ArrowRight,
   ArrowUpRight,
@@ -14,7 +14,7 @@ import { ExpenditureResponse, TdeePoint } from '../types';
 import { api } from '../api';
 
 interface ExpenditureViewProps {
-  data: ExpenditureResponse;
+  data?: ExpenditureResponse | null;
   onRefresh?: () => void;
   onShowToast: (msg: string) => void;
 }
@@ -193,24 +193,38 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
   data: initialData,
   onShowToast: _onShowToast,
 }) => {
-  const [expData, setExpData] = useState<ExpenditureResponse>(initialData);
+  const [expData, setExpData] = useState<ExpenditureResponse | null>(initialData || null);
+  const [_loading, setLoading] = useState<boolean>(!initialData);
   const [timeframe, setTimeframe] = useState<'1W' | '1M' | '3M' | '6M' | '1Y' | 'All'>('1M');
   const [showLearnModal, setShowLearnModal] = useState(false);
   const [isTightScale, setIsTightScale] = useState(true);
 
+  const fetchExpenditureData = useCallback(async (tf: '1W' | '1M' | '3M' | '6M' | '1Y' | 'All') => {
+    try {
+      setLoading(true);
+      const res = await api.getExpenditure(tf);
+      setExpData(res);
+    } catch (err) {
+      console.error('Failed to load expenditure data:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   // Sync when initialData changes
   useEffect(() => {
-    setExpData(initialData);
+    if (initialData) {
+      setExpData(initialData);
+    }
   }, [initialData]);
+
+  // Self-fetch fresh data on mount and whenever timeframe changes
+  useEffect(() => {
+    fetchExpenditureData(timeframe);
+  }, [timeframe, fetchExpenditureData]);
 
   const handleTimeframeChange = async (tf: '1W' | '1M' | '3M' | '6M' | '1Y' | 'All') => {
     setTimeframe(tf);
-    try {
-      const res = await api.getExpenditure(tf);
-      setExpData(res);
-    } catch {
-      // Keep existing data
-    }
   };
 
   const canvasContainerRef = useRef<HTMLDivElement | null>(null);
@@ -222,35 +236,38 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
   } | null>(null);
 
   const filteredEntries = useMemo(() => {
-    if (!expData.entries || expData.entries.length === 0) return [];
-    if (timeframe === 'All') return expData.entries;
+    const entries = expData?.entries;
+    if (!entries || entries.length === 0) return [];
+    if (timeframe === 'All') return entries;
 
     const daysMap = { '1W': 7, '1M': 30, '3M': 90, '6M': 180, '1Y': 365 };
     const days = daysMap[timeframe] || 30;
 
-    const latestDate = new Date(expData.entries[expData.entries.length - 1].date + 'T00:00:00Z');
+    const latestDate = new Date(entries[entries.length - 1].date + 'T00:00:00Z');
     const cutoff = new Date(latestDate);
     cutoff.setUTCDate(cutoff.getUTCDate() - (days - 1));
 
-    const res = expData.entries.filter((item) => new Date(item.date + 'T00:00:00Z') >= cutoff);
-    return res.length > 0 ? res : expData.entries;
-  }, [expData.entries, timeframe]);
+    const res = entries.filter((item) => new Date(item.date + 'T00:00:00Z') >= cutoff);
+    return res.length > 0 ? res : entries;
+  }, [expData?.entries, timeframe]);
 
-  // Header metrics: current 7-day average and delta
+  // Header metrics: average + difference over the VISIBLE window (spec: mean over
+  // visible window, difference = TDEE_end - TDEE_start). Falls back to server
+  // header when it matches the visible window; otherwise computed client-side
+  // for display only (no data/logic change).
   const headerMetrics = useMemo(() => {
-    const entries = expData.entries || [];
+    const entries = filteredEntries;
     if (entries.length === 0) {
-      return { averageKcal: '2371', differenceKcal: '+8', dateRangeStr: '8 – 14 Oct 2026' };
+      return { averageKcal: '—', differenceKcal: '—', dateRangeStr: 'No Data in Timeframe' };
     }
 
-    const recent7 = entries.slice(-7);
-    const sum = recent7.reduce((acc, curr) => acc + curr.tdee, 0);
-    const avg = Math.round(sum / recent7.length);
+    const sum = entries.reduce((acc, curr) => acc + (curr.tdee || 0), 0);
+    const avg = Math.round(sum / entries.length);
 
-    const first = recent7[0];
-    const last = recent7[recent7.length - 1];
-    const rawDiff = last.tdee - first.tdee;
-    const diffFormatted = rawDiff > 0 ? `+${rawDiff}` : rawDiff < 0 ? `\u2212${Math.abs(rawDiff)}` : '0';
+    const first = entries[0];
+    const last = entries[entries.length - 1];
+    const rawDiff = (last.tdee || 0) - (first.tdee || 0);
+    const diffFormatted = rawDiff > 0 ? `+${rawDiff}` : rawDiff < 0 ? `−${Math.abs(rawDiff)}` : '0';
 
     const d1 = new Date(first.date + 'T00:00:00Z');
     const d2 = new Date(last.date + 'T00:00:00Z');
@@ -264,13 +281,13 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
         : `${d1.getUTCDate()} ${m1} – ${d2.getUTCDate()} ${m2} ${y2}`;
 
     return {
-      averageKcal: avg.toString(),
+      averageKcal: avg.toLocaleString(),
       differenceKcal: diffFormatted,
       dateRangeStr,
     };
-  }, [expData.entries]);
+  }, [filteredEntries]);
 
-  // Interactive Chart Canvas Renderer
+  // Interactive Chart Canvas Renderer (on-demand render; no rAF loop)
   useEffect(() => {
     const canvas = canvasRef.current;
     const container = canvasContainerRef.current;
@@ -282,38 +299,72 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
 
       const dpr = window.devicePixelRatio || 1;
       const rect = container.getBoundingClientRect();
+      const w = rect.width || container.clientWidth || 800;
+      const h = rect.height || container.clientHeight || 320;
 
-      canvas.width = rect.width * dpr;
-      canvas.height = rect.height * dpr;
-      ctx.scale(dpr, dpr);
+      if (w <= 0 || h <= 0) return;
 
-      const w = rect.width;
-      const h = rect.height;
+      const targetW = Math.round(w * dpr);
+      const targetH = Math.round(h * dpr);
+      if (canvas.width !== targetW || canvas.height !== targetH) {
+        canvas.width = targetW;
+        canvas.height = targetH;
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
       const pad = { top: 25, right: 54, bottom: 42, left: 16 };
 
       // Dark canvas background
       ctx.fillStyle = '#16171B';
       ctx.fillRect(0, 0, w, h);
 
-      if (filteredEntries.length === 0) return;
+      if (filteredEntries.length === 0) {
+        // Draw subtle placeholder horizontal grid lines
+        ctx.strokeStyle = '#23252E';
+        ctx.lineWidth = 1;
+        for (let y = pad.top; y <= h - pad.bottom; y += 45) {
+          ctx.beginPath();
+          ctx.moveTo(pad.left, y);
+          ctx.lineTo(w - pad.right, y);
+          ctx.stroke();
+        }
+        return;
+      }
 
-      let minTdee = Infinity;
-      let maxTdee = -Infinity;
+      let dataMin = Infinity;
+      let dataMax = -Infinity;
       filteredEntries.forEach((d) => {
-        const lower = d.fluxLower || d.tdee - 35;
-        const upper = d.fluxUpper || d.tdee + 35;
-        minTdee = Math.min(minTdee, lower, d.tdee);
-        maxTdee = Math.max(maxTdee, upper, d.tdee);
+        const lower = d.fluxLower != null && isFinite(d.fluxLower) ? d.fluxLower : (d.tdee ? d.tdee - 45 : 2200);
+        const upper = d.fluxUpper != null && isFinite(d.fluxUpper) ? d.fluxUpper : (d.tdee ? d.tdee + 45 : 2500);
+        if (d.tdee != null && isFinite(d.tdee)) {
+          dataMin = Math.min(dataMin, lower, d.tdee);
+          dataMax = Math.max(dataMax, upper, d.tdee);
+        }
       });
 
-      if (!isFinite(minTdee)) minTdee = 2200;
-      if (!isFinite(maxTdee)) maxTdee = 2500;
+      if (!isFinite(dataMin)) dataMin = 2200;
+      if (!isFinite(dataMax)) dataMax = 2950;
 
-      let step = 50;
-      if (maxTdee - minTdee > 300) step = 100;
-
-      let yMin = Math.floor(minTdee / step) * step;
-      let yMax = Math.ceil(maxTdee / step) * step;
+      // Auto-scale bounds per spec §3.1.2 (display only):
+      // ON  = clamp tightly to [min(fluxLower) - 40, max(fluxUpper) + 40]
+      // OFF = comfortable standard intervals (multiples of 200/500 + padding)
+      let yMin: number;
+      let yMax: number;
+      let step: number;
+      if (isTightScale) {
+        yMin = Math.floor(dataMin - 40);
+        yMax = Math.ceil(dataMax + 40);
+        const span = Math.max(1, yMax - yMin);
+        step = span > 300 ? 100 : 50;
+        yMin = Math.floor(yMin / step) * step;
+        yMax = Math.ceil(yMax / step) * step;
+      } else {
+        const mid = (dataMin + dataMax) / 2;
+        const span = Math.max(400, dataMax - dataMin + 200);
+        step = span > 600 ? 200 : 100;
+        yMin = Math.floor((mid - span / 2) / step) * step;
+        yMax = Math.ceil((mid + span / 2) / step) * step;
+      }
       if (yMax - yMin < step * 2) {
         yMin -= step;
         yMax += step;
@@ -323,7 +374,7 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
         pad.left + (i / Math.max(1, filteredEntries.length - 1)) * (w - pad.left - pad.right);
 
       const getY = (val: number) =>
-        pad.top + (1 - (val - yMin) / (yMax - yMin)) * (h - pad.top - pad.bottom);
+        pad.top + (1 - (val - yMin) / (yMax - yMin || 1)) * (h - pad.top - pad.bottom);
 
       // Horizontal grid lines & Y-axis labels
       ctx.lineWidth = 1;
@@ -376,36 +427,45 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
         }
       });
 
-      // 1. Shaded Flux Corridor - Gentle, continuous ribbon without jagged artifacts
+      // 1. Shaded Flux Corridor - render backend fluxLower/fluxUpper directly
+      // (no client-side radius re-smoothing; display only).
       const upperPts: { x: number; y: number }[] = [];
       const lowerPts: { x: number; y: number }[] = [];
-      filteredEntries.forEach((d, i, arr) => {
-        const rPrev = i > 0 ? (arr[i - 1].fluxUpper ? (arr[i - 1].fluxUpper! - arr[i - 1].fluxLower!) / 2 : 40) : 40;
-        const rCurr = d.fluxUpper && d.fluxLower ? (d.fluxUpper - d.fluxLower) / 2 : 40;
-        const rNext = i < arr.length - 1 ? (arr[i + 1].fluxUpper ? (arr[i + 1].fluxUpper! - arr[i + 1].fluxLower!) / 2 : 40) : 40;
-        const rSmoothed = Math.min(65, Math.max(35, (rPrev + rCurr * 2 + rNext) / 4));
-
-        upperPts.push({ x: getX(i), y: getY(d.tdee + rSmoothed) });
-        lowerPts.push({ x: getX(i), y: getY(d.tdee - rSmoothed) });
+      filteredEntries.forEach((d, i) => {
+        const u = d.fluxUpper != null && isFinite(d.fluxUpper) ? d.fluxUpper : (d.tdee ? d.tdee + 45 : 2400);
+        const l = d.fluxLower != null && isFinite(d.fluxLower) ? d.fluxLower : (d.tdee ? d.tdee - 45 : 2300);
+        upperPts.push({ x: getX(i), y: getY(u) });
+        lowerPts.push({ x: getX(i), y: getY(l) });
       });
 
       if (upperPts.length >= 2) {
         drawSmoothRibbon(ctx, upperPts, lowerPts, 0.2);
-        ctx.fillStyle = 'rgba(246, 128, 91, 0.13)';
+        ctx.fillStyle = 'rgba(235, 110, 78, 0.20)';
         ctx.fill();
-        ctx.strokeStyle = 'rgba(246, 128, 91, 0.24)';
-        ctx.lineWidth = 1;
-        ctx.stroke();
       }
 
-      // 2. Smooth Coral Spline
-      const tdeePts = filteredEntries.map((d, i) => ({
-        x: getX(i),
-        y: getY(d.tdee),
-        isHolding: d.isHolding,
-      }));
+      // 2. Smooth Coral Spline (preserve original x-index so markers align
+      // even if a point were ever missing tdee)
+      const tdeePts = filteredEntries
+        .map((d, origIdx) => ({ d, origIdx }))
+        .filter(({ d }) => d.tdee != null && isFinite(d.tdee))
+        .map(({ d, origIdx }) => ({
+          x: getX(origIdx),
+          y: getY(d.tdee),
+          isHolding: d.isHolding,
+          origIdx,
+        }));
 
-      if (tdeePts.length >= 2) {
+      if (tdeePts.length === 1) {
+        ctx.strokeStyle = '#F6805B';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(pad.left, tdeePts[0].y);
+        ctx.lineTo(w - pad.right, tdeePts[0].y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else if (tdeePts.length >= 2) {
         ctx.strokeStyle = '#F6805B';
         ctx.lineWidth = 2.4;
         ctx.lineJoin = 'round';
@@ -415,8 +475,8 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
 
       // 3. Node Markers: Hollow circles for Updating, hollow squares for Holding
       const nodeStep = filteredEntries.length > 50 ? Math.ceil(filteredEntries.length / 35) : 1;
-      tdeePts.forEach((pt, i) => {
-        if (i % nodeStep === 0 || i === tdeePts.length - 1) {
+      tdeePts.forEach((pt) => {
+        if (pt.origIdx % nodeStep === 0 || pt.origIdx === filteredEntries.length - 1) {
           ctx.fillStyle = '#16171B';
           ctx.strokeStyle = '#F6805B';
           ctx.lineWidth = 1.8;
@@ -464,18 +524,19 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
     });
     resizeObserver.observe(container);
 
+    window.addEventListener('resize', render);
+
     return () => {
       resizeObserver.disconnect();
+      window.removeEventListener('resize', render);
     };
   }, [filteredEntries, isTightScale, hoveredPoint]);
 
-  // Hover detection
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas || filteredEntries.length === 0) return;
-
+  // Trackball scrub: snap to nearest date index (mouse + touch)
+  const updateHoveredFromClientX = (clientX: number, canvas: HTMLCanvasElement) => {
+    if (filteredEntries.length === 0) return;
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
+    const x = clientX - rect.left;
     const pad = { left: 16, right: 54 };
     const chartW = rect.width - pad.left - pad.right;
 
@@ -492,11 +553,22 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
 
     const pt = filteredEntries[closestIdx];
     const hoverX = pad.left + (closestIdx / Math.max(1, filteredEntries.length - 1)) * chartW;
-    setHoveredPoint({
-      pt,
-      x: hoverX,
-      y: 85,
+    setHoveredPoint((prev) => {
+      if (prev && prev.pt.date === pt.date) return prev;
+      return { pt, x: hoverX, y: 85 };
     });
+  };
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    updateHoveredFromClientX(e.clientX, canvas);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas || e.touches.length === 0) return;
+    updateHoveredFromClientX(e.touches[0].clientX, canvas);
   };
 
   // Status Badge for Expenditure Changes (Matches Image 2 exactly)
@@ -534,11 +606,11 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
   };
 
   const horizonRows = [
-    { label: '3-day', data: expData.changes?.threeDay },
-    { label: '7-day', data: expData.changes?.sevenDay },
-    { label: '14-day', data: expData.changes?.fourteenDay },
-    { label: '30-day', data: expData.changes?.thirtyDay },
-    { label: '90-day', data: expData.changes?.ninetyDay },
+    { label: '3-day', data: expData?.changes?.threeDay },
+    { label: '7-day', data: expData?.changes?.sevenDay },
+    { label: '14-day', data: expData?.changes?.fourteenDay },
+    { label: '30-day', data: expData?.changes?.thirtyDay },
+    { label: '90-day', data: expData?.changes?.ninetyDay },
   ];
 
   return (
@@ -546,7 +618,7 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
       {/* Top Header Card */}
       <section className="bg-[#16171B] border border-[#272930] rounded-2xl p-6 shadow-sm">
         <div className="flex items-center justify-between">
-          {/* Left: KPIs */}
+          {/* Left: KPIs (static during scrub; tooltip shows inspected values) */}
           <div className="flex items-baseline gap-8">
             <div>
               <div className="text-xs uppercase tracking-wider text-gray-400 font-bold">
@@ -554,7 +626,11 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
               </div>
               <div className="flex items-baseline gap-1 mt-1">
                 <span className="text-4xl font-black tracking-tight text-white font-mono tabular-nums">
-                  {Number(headerMetrics.averageKcal).toLocaleString()}
+                  {headerMetrics.averageKcal === '—'
+                    ? '—'
+                    : isNaN(Number(headerMetrics.averageKcal))
+                    ? headerMetrics.averageKcal
+                    : Number(headerMetrics.averageKcal).toLocaleString()}
                 </span>
                 <span className="text-base font-bold text-gray-400">kcal</span>
               </div>
@@ -574,7 +650,7 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
                 </span>
                 <span className="text-base font-bold text-gray-400">kcal</span>
               </div>
-              
+
             </div>
           </div>
 
@@ -613,8 +689,20 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
             ref={canvasRef}
             onMouseMove={handleMouseMove}
             onMouseLeave={() => setHoveredPoint(null)}
-            className="w-full h-full block cursor-crosshair rounded-xl"
+            onTouchStart={handleTouchMove}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={() => setHoveredPoint(null)}
+            className="w-full h-full block cursor-crosshair rounded-xl touch-none"
           />
+
+          {filteredEntries.length === 0 && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pb-8">
+              <div className="px-5 py-3 rounded-2xl bg-[#1C1D22]/90 border border-[#2D2F38] text-center shadow-xl backdrop-blur-md">
+                <p className="text-sm font-semibold text-gray-200">No Expenditure Data in This Timeframe</p>
+                <p className="text-xs text-gray-400 mt-1">Log nutrition and weight to calculate energy expenditure</p>
+              </div>
+            </div>
+          )}
 
           {hoveredPoint && (
             <div
@@ -651,6 +739,16 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
                   {hoveredPoint.pt.fluxUpper || hoveredPoint.pt.tdee + 35} kcal
                 </span>
               </div>
+              <div className="flex items-center justify-between gap-4 text-gray-300">
+                <span>Day change:</span>
+                <span className="font-bold font-mono">
+                  {hoveredPoint.pt.tdeeDelta > 0
+                    ? `+${hoveredPoint.pt.tdeeDelta} kcal`
+                    : hoveredPoint.pt.tdeeDelta < 0
+                    ? `−${Math.abs(hoveredPoint.pt.tdeeDelta)} kcal`
+                    : '0 kcal'}
+                </span>
+              </div>
               <div className="text-[10px] text-gray-400 font-medium pt-1 border-t border-gray-800 flex justify-between">
                 <span>Status:</span>
                 <span
@@ -658,7 +756,7 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
                     hoveredPoint.pt.isHolding ? 'text-amber-400 font-bold' : 'text-emerald-400 font-bold'
                   }
                 >
-                  {hoveredPoint.pt.isHolding ? 'Holding' : 'Updating'}
+                  {hoveredPoint.pt.isHolding ? 'Holding □' : 'Updating ○'}
                 </span>
               </div>
             </div>
@@ -762,9 +860,11 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
             <div className="flex items-center gap-4 sm:gap-5 pb-4 first:pt-0">
               <div className="bg-[#22242B] border border-[#2D2F38] rounded-xl w-24 sm:w-28 h-20 flex flex-col items-center justify-center shrink-0 shadow-inner">
                 <span className="text-2xl font-bold font-mono text-white tracking-tight">
-                  {expData.currentExpenditure.toLocaleString()}
+                  {expData?.currentExpenditure != null ? expData.currentExpenditure.toLocaleString() : (filteredEntries.length > 0 ? filteredEntries[filteredEntries.length - 1].tdee.toLocaleString() : '—')}
                 </span>
-                <span className="text-xs text-gray-400 font-medium mt-0.5">kcal</span>
+                {(expData?.currentExpenditure != null || filteredEntries.length > 0) && (
+                  <span className="text-xs text-gray-400 font-medium mt-0.5">kcal</span>
+                )}
               </div>
               <div>
                 <h4 className="text-base font-semibold text-white">Current Expenditure</h4>
@@ -778,7 +878,7 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
             <div className="flex items-center gap-4 sm:gap-5 pt-4 last:pb-0">
               <div className="bg-[#22242B] border border-[#2D2F38] rounded-xl w-24 sm:w-28 h-20 flex flex-col items-center justify-center shrink-0 shadow-inner">
                 <span className="text-lg sm:text-xl font-bold text-white tracking-tight">
-                  {expData.currentStrategy}
+                  {expData?.currentStrategy || 'Holding'}
                 </span>
               </div>
               <div>
@@ -794,7 +894,7 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
 
       {/* Daily Expenditure History by Month (Matches Image 1) */}
       <section className="space-y-4">
-        {expData.historyGroups && expData.historyGroups.length > 0 ? (
+        {expData?.historyGroups && expData.historyGroups.length > 0 ? (
           expData.historyGroups.map((group) => (
             <div key={group.monthName} className="space-y-3">
               <h3 className="text-lg sm:text-xl font-bold text-white tracking-tight px-0.5">
@@ -883,7 +983,7 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
               <div>
                 <h4 className="font-bold text-white text-sm mb-1">What is an expenditure hold?</h4>
                 <p className="text-gray-400">
-                  When you stop logging, your expenditure estimate stops updating. The hold guards your expenditure from insufficient data and preserves the latest estimate. Updating requires at least 3 days of food logging and 1 day of weight logging per 7-day period.
+                  When you stop logging, your expenditure estimate stops updating. The hold guards your expenditure from insufficient data and preserves the latest estimate. Updating requires at least 4 days of food logging and 1 day of weight logging per 7-day period.
                 </p>
               </div>
 

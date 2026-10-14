@@ -4,6 +4,7 @@ import express from 'express';
 import http from 'http';
 import { scaleWeightRouter } from '../src/routes/scaleWeight.js';
 import { prisma } from '../src/db.js';
+import { recalculatePipeline } from '../src/services/algorithm.js';
 
 describe('Scale Weight API & Data Aggregation Service', () => {
   const app = express();
@@ -95,5 +96,6 @@ describe('Scale Weight API & Data Aggregation Service', () => {
 
     // Clean up test entry
     await prisma.scaleWeightEntry.delete({ where: { entryId: entry.entryId } });
+    await recalculatePipeline();
   });
 });

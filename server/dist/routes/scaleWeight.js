@@ -53,17 +53,17 @@ exports.scaleWeightRouter.get('/', async (req, res) => {
         if (scaleEntries.length === 0) {
             return res.json({
                 header: {
-                    average: 78.0,
-                    averageFormatted: '78.0 kg',
-                    differenceFormatted: '0.0 kg',
+                    average: null,
+                    averageFormatted: '—',
+                    differenceFormatted: '—',
                     rawDifference: 0,
-                    dateRangeSubtitle: '--',
+                    dateRangeSubtitle: '—',
                     unit: 'kg'
                 },
                 chart: {
                     points: [],
-                    minWeight: 77.0,
-                    maxWeight: 79.0,
+                    minWeight: null,
+                    maxWeight: null,
                     timeframe,
                     aggregation
                 },
@@ -166,8 +166,8 @@ exports.scaleWeightRouter.get('/', async (req, res) => {
         }
         // 6. Header calculation: Average & Difference in the window
         const actualWeighInsInWindow = chartPoints.filter(p => p.hasEntry && p.scaleWeight !== null);
-        let avgWeight = 78.0;
-        let diffWeight = 0;
+        let avgWeight = null;
+        let diffWeight = null;
         if (actualWeighInsInWindow.length > 0) {
             const sum = actualWeighInsInWindow.reduce((acc, p) => acc + (p.scaleWeight || 0), 0);
             avgWeight = Math.round((sum / actualWeighInsInWindow.length) * 10) / 10;
@@ -182,11 +182,14 @@ exports.scaleWeightRouter.get('/', async (req, res) => {
             avgWeight = Math.round((sum / chartPoints.length) * 10) / 10;
             diffWeight = Math.round((chartPoints[chartPoints.length - 1].interpolatedWeight - chartPoints[0].interpolatedWeight) * 10) / 10;
         }
-        const diffFormatted = diffWeight > 0
-            ? `+${diffWeight.toFixed(1)} kg`
-            : diffWeight < 0
-                ? `\u2212${Math.abs(diffWeight).toFixed(1)} kg`
-                : `0.0 kg`;
+        const diffFormatted = diffWeight === null
+            ? '—'
+            : diffWeight > 0
+                ? `+${diffWeight.toFixed(1)} kg`
+                : diffWeight < 0
+                    ? `\u2212${Math.abs(diffWeight).toFixed(1)} kg`
+                    : `0.0 kg`;
+        const averageFormatted = avgWeight !== null ? `${avgWeight.toFixed(1)} kg` : '—';
         const startDateStr = chartPoints.length > 0 ? chartPoints[0].date : latestDateStr;
         const dateRangeSubtitle = formatDateRange(startDateStr, latestDateStr);
         // 7. Calculate min and max weights for chart Y-axis range
@@ -228,9 +231,9 @@ exports.scaleWeightRouter.get('/', async (req, res) => {
         res.json({
             header: {
                 average: avgWeight,
-                averageFormatted: `${avgWeight.toFixed(1)} kg`,
+                averageFormatted,
                 differenceFormatted: diffFormatted,
-                rawDifference: diffWeight,
+                rawDifference: diffWeight ?? 0,
                 dateRangeSubtitle,
                 unit: 'kg'
             },

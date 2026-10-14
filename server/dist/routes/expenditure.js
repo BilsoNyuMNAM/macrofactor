@@ -19,19 +19,19 @@ exports.expenditureRouter.get('/', async (req, res) => {
             return res.json({
                 entries: [],
                 header: {
-                    average: 2340,
-                    differenceFormatted: '0 kcal',
+                    average: null,
+                    differenceFormatted: '—',
                     rawDifference: 0,
-                    dateRangeSubtitle: '--'
+                    dateRangeSubtitle: '—'
                 },
                 changes: {
-                    threeDay: { delta: '-- kcal', status: 'Waiting', sparklinePoints: [] },
-                    sevenDay: { delta: '-- kcal', status: 'Waiting', sparklinePoints: [] },
-                    fourteenDay: { delta: '-- kcal', status: 'Waiting', sparklinePoints: [] },
-                    thirtyDay: { delta: '-- kcal', status: 'Waiting', sparklinePoints: [] },
-                    ninetyDay: { delta: '-- kcal', status: 'Waiting', sparklinePoints: [] }
+                    threeDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+                    sevenDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+                    fourteenDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+                    thirtyDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+                    ninetyDay: { delta: '—', status: 'Waiting', sparklinePoints: [] }
                 },
-                currentExpenditure: 2340,
+                currentExpenditure: null,
                 currentStrategy: 'Holding',
                 historyGroups: []
             });
@@ -45,13 +45,18 @@ exports.expenditureRouter.get('/', async (req, res) => {
                 trendWeight: tr?.trendWeightKg ?? 78.0,
                 weightVelocityKgPerDay: tr?.velocityKgPerDay ?? 0,
                 rawIntake: null,
+                imputedIntake: null,
                 isFasting: false,
                 isValidIntake: true,
                 tdee: e.expenditureKcal,
                 tdeeDelta: e.tdeeDeltaKcal,
                 fluxUpper: e.fluxUpperKcal,
                 fluxLower: e.fluxLowerKcal,
+                fluxRadius: (e.fluxUpperKcal - e.fluxLowerKcal) / 2,
+                strategy: e.status,
                 isHolding: e.status === 'holding',
+                isColdStart: false,
+                confidenceScore: 1,
                 noiseRangeLower: tr?.noiseRangeLowerKg ?? 77.7,
                 noiseRangeUpper: tr?.noiseRangeUpperKg ?? 78.3
             };
