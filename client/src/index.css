@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --mf-surface-canvas: #0e0f12;
+  --mf-surface: #1f1f1f;
+  --mf-surface-card: #18191f;
+  --mf-surface-secondary: #25272e;
+  --mf-surface-tertiary: #2a2a2a;
+
+  --mf-content: #ffffff;
+  --mf-content-secondary: #dddddd;
+  --mf-content-tertiary: #a6a6a6;
+  --mf-content-disabled: #525252;
+
+  --mf-border: #272930;
+  --mf-border-subtle: rgba(255, 255, 255, 0.08);
+
+  --mf-orange: #f6805b;
+  --mf-orange-medium: #ff6636;
+  --mf-purple: #c7b8f5;
+  --mf-scale: #8250df;
+  --mf-green: #43aa71;
+  --mf-yellow: #f5bc43;
+}
+
+body {
+  background-color: var(--mf-surface-canvas);
+  color: var(--mf-content);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.8);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+}

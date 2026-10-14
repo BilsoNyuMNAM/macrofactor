@@ -1,0 +1,16 @@
+{
+  "name": "macrofactor-app",
+  "version": "1.0.0",
+  "description": "MacroFactor fullstack application with React, Express, Prisma, and PostgreSQL",
+  "scripts": {
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:seed": "cd server && npm run prisma:seed",
+    "server:dev": "cd server && npm run dev",
+    "client:dev": "cd client && npm run dev",
+    "build:server": "cd server && npm run build",
+    "build:client": "cd client && npm run build",
+    "build": "npm run build:server && npm run build:client",
+    "test": "cd server && npm test"
+  }
+}
