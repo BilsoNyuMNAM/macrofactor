@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.computeWeeklyRateOfChange = exports.computeWeightTrend = exports.interpolateScaleWeights = exports.resolveTissueEnergyDensity = exports.EXPENDITURE_WINDOW_N = exports.METABOLIC_EXPENDITURE_ALPHA = exports.WEIGHT_TREND_WINDOW_N = exports.METABOLIC_TREND_ALPHA = exports.project30DayWeightTrend = exports.processDailyAnalytics = exports.PredictionStyle = exports.MetabolicEngine = exports.DEFAULT_CONFIG = exports.WEEKDAY_SHORT = exports.WEEKDAY_NAMES = exports.V3_DAILY_DELTA_CLAMP_KCAL = exports.V3_MAX_INTERPOLATION_GAP_DAYS = exports.V3_MIN_VIABLE_TDEE_FLOOR = exports.V3_BASE_FLUX_RADIUS_HOLDING = exports.V3_BASE_FLUX_RADIUS_UPDATING = exports.V3_ADAPTIVE_GAIN_LARGE = exports.V3_ADAPTIVE_GAIN_SMALL = exports.KCAL_PER_KG_TISSUE_GAIN = exports.KCAL_PER_KG_TISSUE_LOSS = exports.KCAL_PER_KG_TISSUE_V3 = exports.MACROFACTOR_TREND_ALPHA = void 0;
+exports.computeWeeklyRateOfChange = exports.computeWeightTrend = exports.interpolateScaleWeights = exports.resolveTissueEnergyDensity = exports.EXPENDITURE_WINDOW_N = exports.METABOLIC_EXPENDITURE_ALPHA = exports.WEIGHT_TREND_WINDOW_N = exports.METABOLIC_TREND_ALPHA = exports.project30DayWeightTrend = exports.processDailyAnalytics = exports.PredictionStyle = exports.MetabolicEngine = exports.DEFAULT_CONFIG = exports.WEEKDAY_SHORT = exports.WEEKDAY_NAMES = exports.V3_EXPENDITURE_DAMPING_DAYS = exports.V3_EXPENDITURE_VELOCITY_LOOKBACK_DAYS = exports.V3_DAILY_DELTA_CLAMP_KCAL = exports.V3_MAX_INTERPOLATION_GAP_DAYS = exports.V3_MIN_VIABLE_TDEE_FLOOR = exports.V3_BASE_FLUX_RADIUS_HOLDING = exports.V3_BASE_FLUX_RADIUS_UPDATING = exports.V3_ADAPTIVE_GAIN_LARGE = exports.V3_ADAPTIVE_GAIN_SMALL = exports.KCAL_PER_KG_TISSUE_GAIN = exports.KCAL_PER_KG_TISSUE_LOSS = exports.KCAL_PER_KG_TISSUE_V3 = exports.MACROFACTOR_TREND_ALPHA = void 0;
 exports.isValidIntakeDay = isValidIntakeDay;
 exports.buildContinuousCalendar = buildContinuousCalendar;
 exports.executeMacroFactorPipeline = executeMacroFactorPipeline;
@@ -62,6 +62,8 @@ exports.V3_BASE_FLUX_RADIUS_HOLDING = 60;
 exports.V3_MIN_VIABLE_TDEE_FLOOR = 1000;
 exports.V3_MAX_INTERPOLATION_GAP_DAYS = 7;
 exports.V3_DAILY_DELTA_CLAMP_KCAL = 8;
+exports.V3_EXPENDITURE_VELOCITY_LOOKBACK_DAYS = 19; // Grounded in StrongerModels.trendWeightDays19
+exports.V3_EXPENDITURE_DAMPING_DAYS = 9; // Grounded in StrongerModels.expenditureDays9
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
 exports.WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 exports.WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -308,10 +310,18 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
             delta = 0;
         }
         else {
-            // Rolling mean intake over trailing window [windowStart, i]:
+            // MacroFactor V3 Expenditure Velocity Estimation:
+            // Uses 19-day lookback horizon (grounded in StrongerModels.trendWeightDays19)
+            // to prevent short-term weight noise from creating exaggerated metabolic flux
+            const expLookback = Math.min(i, exports.V3_EXPENDITURE_VELOCITY_LOOKBACK_DAYS);
+            const expVelocity = expLookback === 0
+                ? 0
+                : Math.round(((trendWeights[i] - trendWeights[i - expLookback]) / expLookback) * 1000) / 1000;
+            // Matched intake trailing window [expWindowStart, i]:
             // Combines verified logged calories with velocity-inversion imputed calories for skipped days
+            const expWindowStart = Math.max(0, i - (expLookback > 0 ? expLookback - 1 : 0));
             let sumIntake = 0;
-            for (let k = windowStart; k <= i; k++) {
+            for (let k = expWindowStart; k <= i; k++) {
                 if (isValidIntakeDay(continuous[k])) {
                     sumIntake += continuous[k].isFasting ? 0 : (continuous[k].calories ?? 0);
                 }
@@ -319,16 +329,17 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
                     sumIntake += (imputedIntakes[k] ?? runningTdee);
                 }
             }
-            const windowDays = i - windowStart + 1;
+            const windowDays = i - expWindowStart + 1;
             const avgIntake = sumIntake / windowDays;
             // Symmetrical Thermodynamic Solver (V3):
-            // TDEE_raw = avgIntake - (V_t * 7,700)
-            const rawDemand = avgIntake - (velocities[i] * exports.KCAL_PER_KG_TISSUE_V3);
+            // TDEE_raw = avgIntake - (V_exp * 7,700)
+            const rawDemand = avgIntake - (expVelocity * exports.KCAL_PER_KG_TISSUE_V3);
             const rawGap = rawDemand - runningTdee;
             // Adaptive Trajectory Damping (V3):
             // Small noisy fluctuations (|rawGap| <= 150): K = 0.08
             // Sustained directional shifts (|rawGap| > 250): K = 0.16
             // Smooth linear transition between 150 and 250
+            // Scaled by V3_EXPENDITURE_DAMPING_DAYS (9 days, grounded in StrongerModels.expenditureDays9)
             const absGap = Math.abs(rawGap);
             let adaptiveGain = exports.V3_ADAPTIVE_GAIN_SMALL;
             if (absGap > 250) {
@@ -339,7 +350,10 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
                     exports.V3_ADAPTIVE_GAIN_SMALL +
                         ((absGap - 150) / 100) * (exports.V3_ADAPTIVE_GAIN_LARGE - exports.V3_ADAPTIVE_GAIN_SMALL);
             }
-            const rawDelta = Math.round(rawGap * adaptiveGain);
+            const effectiveGain = adaptiveGain / exports.V3_EXPENDITURE_DAMPING_DAYS;
+            const rawDelta = Math.round(rawGap * effectiveGain);
+            // Strict Daily Adjustment Limit Clamp (Spec Section 2.3 & MacroFactor Ground Truth):
+            // Enforces strict [-8, +8] kcal/day limit to prevent daily metabolic whiplash
             const clampedDelta = Math.max(-exports.V3_DAILY_DELTA_CLAMP_KCAL, Math.min(exports.V3_DAILY_DELTA_CLAMP_KCAL, rawDelta));
             const unclampedTdee = runningTdee + clampedDelta;
             // Physiological Safety Floor (Spec Section 2.3): Clamp TDEE at 1,000 kcal
@@ -764,10 +778,11 @@ function calculate21DayTypicalMetrics(processedDays) {
  * 7. Re-runs the full MacroFactor V3 pipeline and persists calculations to PostgreSQL in a batched transaction.
  */
 async function recalculatePipeline() {
-    // 1. Fetch Profile, Active Goal & Baseline
-    let [profileRecord, activeGoal] = await Promise.all([
+    // 1. Fetch Profile, Active Goal, Baseline & Active Override
+    let [profileRecord, activeGoal, activeOverride] = await Promise.all([
         db_js_1.prisma.userProfile.findUnique({ where: { id: 1 } }),
-        db_js_1.prisma.goal.findFirst({ where: { status: 'active' }, orderBy: { goalId: 'desc' } })
+        db_js_1.prisma.goal.findFirst({ where: { status: 'active' }, orderBy: { goalId: 'desc' } }),
+        db_js_1.prisma.tdeeOverride.findFirst({ orderBy: { overrideId: 'desc' } })
     ]);
     let profile = profileRecord;
     if (!profile) {
@@ -821,7 +836,7 @@ async function recalculatePipeline() {
         };
     });
     const initialAnchorWeight = activeGoal?.initialTrendWeightKg ?? profile.initialWeightKg ?? 80.8;
-    const processed = executeMacroFactorPipeline(rawInputs, profile.baselineTdee || 2353, initialAnchorWeight);
+    const processed = executeMacroFactorPipeline(rawInputs, profile.baselineTdee || 2353, initialAnchorWeight, exports.MACROFACTOR_TREND_ALPHA, activeOverride?.overrideTdeeKcal ?? null);
     const processedDates = processed.map(item => item.date);
     // 3. Persist to DB using a batched Prisma transaction:
     // First prune any stale dates that no longer exist in the pipeline output,
@@ -860,7 +875,8 @@ async function recalculatePipeline() {
                 tdeeDeltaKcal: item.tdeeDelta,
                 fluxLowerKcal: item.fluxLower,
                 fluxUpperKcal: item.fluxUpper,
-                algorithmVersion: 'v3'
+                algorithmVersion: 'v3',
+                isManualOverride: item.strategy === 'static'
             },
             update: {
                 expenditureKcal: item.tdee,
@@ -868,7 +884,8 @@ async function recalculatePipeline() {
                 tdeeDeltaKcal: item.tdeeDelta,
                 fluxLowerKcal: item.fluxLower,
                 fluxUpperKcal: item.fluxUpper,
-                algorithmVersion: 'v3'
+                algorithmVersion: 'v3',
+                isManualOverride: item.strategy === 'static'
             }
         }))
     ]);

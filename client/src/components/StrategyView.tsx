@@ -18,6 +18,7 @@ import { StrategyResponse, Goal } from '../types';
 import { GoalCard } from './GoalCard';
 import { triggerGoalCelebration } from '../utils/confetti';
 import { api } from '../api';
+import { getIsDemoUser } from '../utils/userContext';
 
 interface StrategyViewProps {
   data: StrategyResponse;
@@ -31,6 +32,7 @@ interface StrategyViewProps {
   onOpenChangeProgramModal: () => void;
   onOpenHistoryModal: () => void;
   onTransitionToMaintenance?: () => void;
+  userEmail?: string;
 }
 
 export const StrategyView: React.FC<StrategyViewProps> = ({
@@ -45,6 +47,7 @@ export const StrategyView: React.FC<StrategyViewProps> = ({
   onOpenChangeProgramModal,
   onOpenHistoryModal,
   onTransitionToMaintenance,
+  userEmail,
 }) => {
   const { schedule, compliance, activePlan, goal, currentTrendWeight, currentTdee } = data;
   const [activeTab, setActiveTab] = useState<'goal' | 'checkin'>('goal');
@@ -53,6 +56,13 @@ export const StrategyView: React.FC<StrategyViewProps> = ({
   // Load historical goals from API
   useEffect(() => {
     let isMounted = true;
+    const email = userEmail || localStorage.getItem('mf_user_email');
+    if (email && !getIsDemoUser(email)) {
+      if (goal) {
+        setHistoricalGoals([goal]);
+      }
+      return;
+    }
     api.getGoals()
       .then((res) => {
         if (isMounted && res.goals) {
@@ -63,7 +73,7 @@ export const StrategyView: React.FC<StrategyViewProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [goal]);
+  }, [goal, userEmail]);
 
   // Goal Reached Detection (Section 2.2)
   const isLoss = goal?.goalType === 'weight_loss' || goal?.goalType === 'fat_loss';

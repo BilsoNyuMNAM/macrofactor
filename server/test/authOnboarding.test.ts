@@ -134,6 +134,20 @@ describe('Auth & Onboarding Service', () => {
     const loginJson = await loginRes.json();
     assert.strictEqual(loginJson.user.isOnboarded, true);
     assert.strictEqual(loginJson.user.onboardingData?.startingWeightKg, 88.5);
+
+    // Verify GET /api/auth/me without parameters returns authenticated: false
+    const meAnonRes = await fetch(`${baseUrl}/me`);
+    assert.strictEqual(meAnonRes.status, 200);
+    const meAnonJson = await meAnonRes.json();
+    assert.strictEqual(meAnonJson.authenticated, false, 'Unauthenticated /me must not return first user in DB');
+
+    // Verify GET /api/auth/me with email query returns correct isolated user
+    const meUserRes = await fetch(`${baseUrl}/me?email=${encodeURIComponent(testEmail)}`);
+    assert.strictEqual(meUserRes.status, 200);
+    const meUserJson = await meUserRes.json();
+    assert.strictEqual(meUserJson.authenticated, true);
+    assert.strictEqual(meUserJson.user.email, testEmail);
+    assert.strictEqual(meUserJson.user.onboardingData?.startingWeightKg, 88.5);
   });
 });
 

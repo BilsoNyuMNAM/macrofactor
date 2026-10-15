@@ -8,24 +8,27 @@ exports.expenditureRouter = (0, express_1.Router)();
 exports.expenditureRouter.get('/', async (req, res) => {
     try {
         const timeframe = req.query.timeframe || '1W';
-        const [profile, activeGoal, scaleEntries, calorieLogs] = await Promise.all([
-            db_js_1.prisma.userProfile.findUnique({ where: { id: 1 } }),
-            db_js_1.prisma.goal.findFirst({ where: { status: 'active' }, orderBy: { goalId: 'desc' } }),
-            db_js_1.prisma.scaleWeightEntry.findMany({ orderBy: { logDate: 'asc' } }),
-            db_js_1.prisma.dailyCalorieLog.findMany({ orderBy: { logDate: 'asc' } })
+        // 1. Read cached rows from PostgreSQL
+        let [tdeeEntries, trendEntries] = await Promise.all([
+            db_js_1.prisma.tdeeEntry.findMany({ orderBy: { logDate: 'asc' } }),
+            db_js_1.prisma.weightTrendEntry.findMany({ orderBy: { logDate: 'asc' } })
         ]);
-        const scaleByDate = new Map();
-        for (const s of scaleEntries)
-            scaleByDate.set(s.logDate, s.scaleWeight);
-        const calByDate = new Map();
-        for (const c of calorieLogs) {
-            calByDate.set(c.logDate, { calories: c.calories, isFasting: c.isFasting, isPartial: c.isPartial });
+        // 2. If cache empty but raw data exists, populate cache via recalculatePipeline()
+        if (tdeeEntries.length === 0) {
+            const [scaleCount, calCount] = await Promise.all([
+                db_js_1.prisma.scaleWeightEntry.count(),
+                db_js_1.prisma.dailyCalorieLog.count()
+            ]);
+            if (scaleCount > 0 || calCount > 0) {
+                await (0, algorithm_js_1.recalculatePipeline)();
+                [tdeeEntries, trendEntries] = await Promise.all([
+                    db_js_1.prisma.tdeeEntry.findMany({ orderBy: { logDate: 'asc' } }),
+                    db_js_1.prisma.weightTrendEntry.findMany({ orderBy: { logDate: 'asc' } })
+                ]);
+            }
         }
-        const allDates = new Set();
-        scaleEntries.forEach(s => allDates.add(s.logDate));
-        calorieLogs.forEach(c => allDates.add(c.logDate));
-        const sortedDates = Array.from(allDates).sort((a, b) => a.localeCompare(b));
-        if (sortedDates.length === 0) {
+        // 3. If still empty, return zero results contract
+        if (tdeeEntries.length === 0) {
             return res.json({
                 entries: [],
                 header: {
@@ -46,21 +49,18 @@ exports.expenditureRouter.get('/', async (req, res) => {
                 historyGroups: []
             });
         }
-        const rawInputs = sortedDates.map(date => {
-            const nut = calByDate.get(date);
-            return {
-                date,
-                scaleWeight: scaleByDate.get(date) ?? null,
-                calories: nut ? nut.calories : null,
-                isFasting: nut ? nut.isFasting : false,
-                isPartial: nut ? nut.isPartial : false
-            };
-        });
-        // Run backend master pipeline to compute full internal ProcessedDay nodes
-        const processedDays = (0, algorithm_js_1.executeMacroFactorPipeline)(rawInputs, profile?.baselineTdee || 2353, activeGoal?.initialTrendWeightKg ?? profile?.initialWeightKg ?? 80.8);
+        // 4. Build helper nodes for Header & Horizon analytics
+        const trendMap = new Map();
+        for (const tr of trendEntries) {
+            trendMap.set(tr.logDate, tr.trendWeightKg);
+        }
+        const processedDays = tdeeEntries.map(td => ({
+            date: td.logDate,
+            tdee: td.expenditureKcal,
+            trendWeight: trendMap.get(td.logDate) ?? 0
+        }));
         const header = (0, algorithm_js_1.calculateHeaderMetrics)(processedDays, timeframe);
         const horizonChanges = (0, algorithm_js_1.calculateMultiHorizonChanges)(processedDays);
-        const latest = processedDays[processedDays.length - 1];
         const changeByHorizon = {
             threeDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
             sevenDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
@@ -85,19 +85,26 @@ exports.expenditureRouter.get('/', async (req, res) => {
                 };
             }
         }
-        // Map 20-field internal ProcessedDay into the 9-field TdeePoint DTO
-        const tdeePoints = processedDays.map(p => ({
-            date: p.date,
-            tdee: p.tdee,
-            tdeeDelta: p.tdeeDelta,
-            fluxLower: p.fluxLower,
-            fluxUpper: p.fluxUpper,
-            fluxRadius: p.fluxRadius,
-            strategy: p.strategy,
-            isHolding: p.isHolding,
-            confidenceScore: p.confidenceScore
-        }));
-        // Group into monthYear in reverse chronological order
+        // 5. Map cached PostgreSQL records into exact 9-field TdeePoint DTO
+        const tdeePoints = tdeeEntries.map(entry => {
+            const radius = Math.round((entry.fluxUpperKcal - entry.fluxLowerKcal) / 2);
+            const isHolding = entry.status === 'holding';
+            const strategy = entry.isManualOverride
+                ? 'static'
+                : entry.status;
+            return {
+                date: entry.logDate,
+                tdee: entry.expenditureKcal,
+                tdeeDelta: entry.tdeeDeltaKcal,
+                fluxLower: entry.fluxLowerKcal,
+                fluxUpper: entry.fluxUpperKcal,
+                fluxRadius: radius,
+                strategy,
+                isHolding,
+                confidenceScore: isHolding ? 0.25 : 0.95
+            };
+        });
+        // 6. Group into monthYear in reverse chronological order
         const historyGroupsMap = new Map();
         for (let i = tdeePoints.length - 1; i >= 0; i--) {
             const pt = tdeePoints[i];
@@ -114,6 +121,7 @@ exports.expenditureRouter.get('/', async (req, res) => {
             entries,
             items: entries // alias for frontend UI component compatibility
         }));
+        const latest = tdeePoints[tdeePoints.length - 1];
         const currentStrategy = latest.strategy === 'static' ? 'Static' : latest.isHolding ? 'Holding' : 'Updating';
         res.json({
             entries: tdeePoints,
@@ -136,5 +144,40 @@ exports.expenditureRouter.get('/', async (req, res) => {
     catch (error) {
         console.error('Error fetching expenditure:', error);
         res.status(500).json({ error: 'Failed to load expenditure data' });
+    }
+});
+// POST /api/expenditure/override - Set manual static TDEE override
+exports.expenditureRouter.post('/override', async (req, res) => {
+    try {
+        const { overrideTdeeKcal, reason, startDate } = req.body;
+        if (!overrideTdeeKcal || typeof overrideTdeeKcal !== 'number' || overrideTdeeKcal < 1000) {
+            return res.status(400).json({ error: 'Valid overrideTdeeKcal (>= 1000) is required' });
+        }
+        const todayStr = new Date().toISOString().split('T')[0];
+        await db_js_1.prisma.tdeeOverride.create({
+            data: {
+                startDate: startDate || todayStr,
+                overrideTdeeKcal: Math.round(overrideTdeeKcal),
+                reason: reason || null
+            }
+        });
+        await (0, algorithm_js_1.recalculatePipeline)();
+        res.json({ success: true, message: `Expenditure override set to ${overrideTdeeKcal} kcal` });
+    }
+    catch (error) {
+        console.error('Error setting expenditure override:', error);
+        res.status(500).json({ error: 'Failed to set expenditure override' });
+    }
+});
+// DELETE /api/expenditure/override - Clear manual static TDEE override
+exports.expenditureRouter.delete('/override', async (_req, res) => {
+    try {
+        await db_js_1.prisma.tdeeOverride.deleteMany();
+        await (0, algorithm_js_1.recalculatePipeline)();
+        res.json({ success: true, message: 'Expenditure override cleared' });
+    }
+    catch (error) {
+        console.error('Error clearing expenditure override:', error);
+        res.status(500).json({ error: 'Failed to clear expenditure override' });
     }
 });

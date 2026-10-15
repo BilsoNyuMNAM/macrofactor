@@ -83,14 +83,23 @@ export const ScaleWeightView: React.FC<ScaleWeightViewProps> = ({
   const fetchScaleWeight = async () => {
     try {
       setLoading(true);
+      const email = userEmail || localStorage.getItem('mf_user_email');
+      if (email && !getIsDemoUser(email)) {
+        const onboarding = getUserOnboarding(email);
+        const logs = getUserLogs(email, onboarding);
+        const userScaleData = buildUserScaleWeightData(email, onboarding, logs, timeframe, aggregation);
+        setData(userScaleData);
+        return;
+      }
       const res = await api.getScaleWeight(timeframe, aggregation);
       setData(res);
     } catch (err) {
       console.warn('API getScaleWeight error, falling back to local data:', err);
-      if (userEmail && !getIsDemoUser(userEmail)) {
-        const onboarding = getUserOnboarding(userEmail);
-        const logs = getUserLogs(userEmail, onboarding);
-        const userScaleData = buildUserScaleWeightData(userEmail, onboarding, logs, timeframe, aggregation);
+      const email = userEmail || localStorage.getItem('mf_user_email');
+      if (email && !getIsDemoUser(email)) {
+        const onboarding = getUserOnboarding(email);
+        const logs = getUserLogs(email, onboarding);
+        const userScaleData = buildUserScaleWeightData(email, onboarding, logs, timeframe, aggregation);
         setData(userScaleData);
       } else {
         onShowToast?.('Failed to load scale weight', false);
@@ -120,54 +129,56 @@ export const ScaleWeightView: React.FC<ScaleWeightViewProps> = ({
     weightKg: number;
     notes?: string;
   }) => {
+    const email = userEmail || localStorage.getItem('mf_user_email');
     try {
-      if (entryData.entryId) {
-        await api.updateScaleWeight(entryData.entryId, {
-          weightKg: entryData.weightKg,
-          logDate: entryData.date,
-          notes: entryData.notes
-        });
-        onShowToast?.(`Scale weight updated to ${entryData.weightKg} kg`);
-      } else {
-        await api.saveScaleWeight({
-          date: entryData.date,
-          weightKg: entryData.weightKg,
-          notes: entryData.notes
-        });
-        onShowToast?.(`Logged scale weight of ${entryData.weightKg} kg`);
-      }
-    } catch (err) {
-      if (userEmail && !getIsDemoUser(userEmail)) {
-        saveUserLog(userEmail, {
+      if (email && !getIsDemoUser(email)) {
+        saveUserLog(email, {
           date: entryData.date,
           scaleWeight: entryData.weightKg,
           notes: entryData.notes,
         });
-        onShowToast?.(`Logged scale weight of ${entryData.weightKg} kg (local)`);
+        onShowToast?.(`Logged scale weight of ${entryData.weightKg} kg`);
       } else {
-        onShowToast?.('Failed to save scale weight', false);
+        if (entryData.entryId) {
+          await api.updateScaleWeight(entryData.entryId, {
+            weightKg: entryData.weightKg,
+            logDate: entryData.date,
+            notes: entryData.notes
+          });
+          onShowToast?.(`Scale weight updated to ${entryData.weightKg} kg`);
+        } else {
+          await api.saveScaleWeight({
+            date: entryData.date,
+            weightKg: entryData.weightKg,
+            notes: entryData.notes
+          });
+          onShowToast?.(`Logged scale weight of ${entryData.weightKg} kg`);
+        }
       }
+    } catch (err) {
+      onShowToast?.('Failed to save scale weight', false);
     }
     await fetchScaleWeight();
     if (onRefreshAll) await onRefreshAll();
   };
 
   const handleDeleteWeighIn = async (entryId: number) => {
+    const email = userEmail || localStorage.getItem('mf_user_email');
     try {
-      await api.deleteScaleWeight(entryId);
-      onShowToast?.('Scale weight entry deleted');
-    } catch (err) {
-      if (userEmail && !getIsDemoUser(userEmail)) {
-        const onboarding = getUserOnboarding(userEmail);
-        const logs = getUserLogs(userEmail, onboarding);
+      if (email && !getIsDemoUser(email)) {
+        const onboarding = getUserOnboarding(email);
+        const logs = getUserLogs(email, onboarding);
         const match = logs.find((l) => Math.abs(new Date(l.date).getTime()) === entryId);
         if (match) {
-          deleteUserLog(userEmail, match.date);
+          deleteUserLog(email, match.date);
         }
         onShowToast?.('Scale weight entry deleted');
       } else {
-        onShowToast?.('Failed to delete scale weight', false);
+        await api.deleteScaleWeight(entryId);
+        onShowToast?.('Scale weight entry deleted');
       }
+    } catch (err) {
+      onShowToast?.('Failed to delete scale weight', false);
     }
     await fetchScaleWeight();
     if (onRefreshAll) await onRefreshAll();

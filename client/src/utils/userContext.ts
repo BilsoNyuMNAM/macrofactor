@@ -15,8 +15,25 @@ import {
   WeightTrendPoint,
   ExpenditureHistoryGroup,
   LoggingCompliance,
+  IntervalChange,
 } from '../types';
+
+type HorizonRecord = {
+  threeDay: IntervalChange;
+  sevenDay: IntervalChange;
+  fourteenDay: IntervalChange;
+  thirtyDay: IntervalChange;
+  ninetyDay: IntervalChange;
+};
 import { calculateMacros } from './macroMath';
+import {
+  DailyLogInput,
+  ProcessedDay,
+  executeMacroFactorPipeline,
+  calculateHeaderMetrics,
+  calculateMultiHorizonChanges,
+  calculate21DayTypicalMetrics
+} from './macroEngine';
 
 const MONTH_NAMES = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -47,7 +64,7 @@ export function getUserOnboarding(email: string): any {
   if (!email) return null;
   const key = `mf_user_onboarding_${email.trim().toLowerCase()}`;
   try {
-    const raw = localStorage.getItem(key) || localStorage.getItem('mf_user_onboarding');
+    const raw = localStorage.getItem(key) || (getIsDemoUser(email) ? localStorage.getItem('mf_user_onboarding') : null);
     if (raw) return JSON.parse(raw);
   } catch {
     // fallback
@@ -147,6 +164,11 @@ export function getUserLogs(email: string, onboarding?: any): LogItem[] {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
+        // If stored logs only have 1 entry but onboarding provides pre-populated history, hydrate with onboarding logs
+        if (parsed.length <= 1 && Array.isArray(onboarding?.logs) && onboarding.logs.length > 1) {
+          localStorage.setItem(key, JSON.stringify(onboarding.logs));
+          return onboarding.logs;
+        }
         // If the log history contains only the auto-generated initial day entry, update its weight to match onboarding.startingWeightKg
         if (parsed.length === 1 && onboarding?.startingWeightKg) {
           const targetWeight = Number(onboarding.startingWeightKg);
@@ -163,6 +185,11 @@ export function getUserLogs(email: string, onboarding?: any): LogItem[] {
     }
   } catch {
     // fallback
+  }
+
+  if (Array.isArray(onboarding?.logs) && onboarding.logs.length > 0) {
+    localStorage.setItem(key, JSON.stringify(onboarding.logs));
+    return onboarding.logs;
   }
 
   // Initial Day-1 clean weigh-in log entry
@@ -245,14 +272,37 @@ export function clearUserLogs(email: string): LogItem[] {
   return [];
 }
 
+function getProcessedUserDays(onboarding: any, logs: LogItem[]): ProcessedDay[] {
+  const baseTdee = Number(onboarding?.baselineTdee) || 2050;
+  const curW = Number(onboarding?.startingWeightKg) || 78.0;
+  if (!logs || logs.length === 0) {
+    const todayStr = new Date().toISOString().split('T')[0];
+    return executeMacroFactorPipeline(
+      [{ date: todayStr, scaleWeight: curW, calories: null, isFasting: false, isPartial: false }],
+      baseTdee,
+      curW
+    );
+  }
+  const rawLogs: DailyLogInput[] = logs.map(l => ({
+    date: l.date,
+    scaleWeight: l.scaleWeight ?? null,
+    calories: l.calories ?? null,
+    isFasting: !!l.isFasting,
+    isPartial: !!l.isPartial
+  }));
+  return executeMacroFactorPipeline(rawLogs, baseTdee, curW);
+}
+
 export function buildUserDashboardData(
   _email: string,
   onboarding: any,
   logs: LogItem[]
 ): DashboardResponse {
   const curW = Number(onboarding?.startingWeightKg) || 78.0;
-  const baseTdee = Number(onboarding?.baselineTdee) || 2340;
+  const baseTdee = Number(onboarding?.baselineTdee) || 2050;
   const todayStr = new Date().toISOString().split('T')[0];
+  const processedDays = getProcessedUserDays(onboarding, logs);
+  const latest = processedDays[processedDays.length - 1];
 
   const profile: UserProfile = {
     id: 2,
@@ -306,7 +356,8 @@ export function buildUserDashboardData(
   const targetCalories =
     Number(onboarding?.program?.targetCalories) ||
     Math.round(baseTdee - (weeklyRateKg * 7700) / 7);
-  const dailyDeficit = Math.round(baseTdee - targetCalories);
+  const currentTdee = latest ? latest.tdee : baseTdee;
+  const dailyDeficit = Math.round(currentTdee - targetCalories);
   const macros = calculateMacros(
     targetCalories,
     curW,
@@ -354,31 +405,26 @@ export function buildUserDashboardData(
     fastCheckIn: false,
   };
 
-  const latestWithWeight = logs.find(
-    (l) => l.scaleWeight !== null && l.scaleWeight !== undefined
-  );
-  const currentWeight = latestWithWeight ? (latestWithWeight.scaleWeight as number) : curW;
+  const currentWeight = latest ? (latest.rawWeight ?? latest.trendWeight) : curW;
+  const currentScaleWeight = latest ? (latest.rawWeight ?? latest.trendWeight) : curW;
 
-  const recentScale = logs
-    .filter((l) => l.scaleWeight !== null && l.scaleWeight !== undefined)
-    .slice(0, 7)
-    .reverse()
-    .map((l) => ({ date: l.date, weight: l.scaleWeight as number }));
+  const recentScale = processedDays
+    .filter((d) => d.rawWeight !== null && !isNaN(d.rawWeight))
+    .slice(-7)
+    .map((d) => ({ date: d.date, weight: d.rawWeight as number }));
 
-  const recentTrend = logs
-    .slice(0, 7)
-    .reverse()
-    .map((l) => ({ date: l.date, weight: l.trendWeight ?? l.scaleWeight ?? curW }));
+  const recentTrend = processedDays
+    .slice(-7)
+    .map((d) => ({ date: d.date, weight: d.trendWeight }));
 
-  const recentTdee = logs
-    .slice(0, 7)
-    .reverse()
-    .map((l) => ({
-      date: l.date,
-      tdee: l.tdee ?? baseTdee,
-      status: 'holding',
-      fluxUpper: (l.tdee ?? baseTdee) + 45,
-      fluxLower: (l.tdee ?? baseTdee) - 45,
+  const recentTdee = processedDays
+    .slice(-7)
+    .map((d) => ({
+      date: d.date,
+      tdee: d.tdee,
+      status: d.strategy,
+      fluxUpper: d.fluxUpper,
+      fluxLower: d.fluxLower,
     }));
 
   if (recentScale.length === 0) {
@@ -401,9 +447,9 @@ export function buildUserDashboardData(
     profile,
     goal,
     currentWeight,
-    currentScaleWeight: currentWeight,
-    currentTdee: baseTdee,
-    tdeeStatus: 'holding',
+    currentScaleWeight,
+    currentTdee,
+    tdeeStatus: latest ? latest.strategy : 'holding',
     program,
     schedule,
     recentTdee,
@@ -415,144 +461,176 @@ export function buildUserDashboardData(
 export function buildUserExpenditureData(
   _email: string,
   onboarding: any,
-  logs: LogItem[]
+  logs: LogItem[],
+  timeframe: '1W' | '1M' | '3M' | '6M' | '1Y' | 'All' = '1M'
 ): ExpenditureResponse {
-  const baseTdee = Number(onboarding?.baselineTdee) || 2340;
-  const todayStr = new Date().toISOString().split('T')[0];
+  const baseTdee = Number(onboarding?.baselineTdee) || 2050;
+  const processedDays = getProcessedUserDays(onboarding, logs);
+  const latest = processedDays[processedDays.length - 1];
 
-  const entries: TdeePoint[] = logs
-    .slice(0, 14)
-    .reverse()
-    .map((l) => {
-      const val = l.tdee ?? baseTdee;
-      return {
-        date: l.date,
-        tdee: val,
-        tdeeDelta: 0,
-        fluxLower: val - 45,
-        fluxUpper: val + 45,
-        fluxRadius: 45,
-        strategy: 'holding' as const,
-        isHolding: true,
-        confidenceScore: 0.5,
+  const header = calculateHeaderMetrics(processedDays, timeframe);
+  const horizonChanges = calculateMultiHorizonChanges(processedDays);
+
+  const changeByHorizon: HorizonRecord = {
+    threeDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+    sevenDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+    fourteenDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+    thirtyDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+    ninetyDay: { delta: '—', status: 'Waiting', sparklinePoints: [] }
+  };
+
+  const keyMap: Record<number, keyof HorizonRecord> = {
+    3: 'threeDay',
+    7: 'sevenDay',
+    14: 'fourteenDay',
+    30: 'thirtyDay',
+    90: 'ninetyDay'
+  };
+  for (const h of horizonChanges) {
+    const key = keyMap[h.horizonDays];
+    if (key) {
+      changeByHorizon[key] = {
+        delta: h.expenditureDeltaFormatted,
+        status: h.expenditureStatus,
+        sparklinePoints: h.sparklineTdeePoints
       };
-    });
-
-  if (entries.length === 0) {
-    entries.push({
-      date: todayStr,
-      tdee: baseTdee,
-      tdeeDelta: 0,
-      fluxLower: baseTdee - 45,
-      fluxUpper: baseTdee + 45,
-      fluxRadius: 45,
-      strategy: 'holding' as const,
-      isHolding: true,
-      confidenceScore: 0.5,
-    });
+    }
   }
 
-  const historyGroups: ExpenditureHistoryGroup[] = [
-    {
-      monthYear: 'October 2026',
-      monthName: 'October 2026',
-      entries,
-      items: entries,
-    },
-  ];
+  const entries: TdeePoint[] = processedDays.map(d => ({
+    date: d.date,
+    tdee: d.tdee,
+    tdeeDelta: d.tdeeDelta,
+    fluxLower: d.fluxLower,
+    fluxUpper: d.fluxUpper,
+    fluxRadius: d.fluxRadius,
+    strategy: d.strategy,
+    isHolding: d.isHolding,
+    confidenceScore: d.confidenceScore
+  }));
+
+  // Group into monthYear in reverse chronological order
+  const historyGroupsMap = new Map<string, TdeePoint[]>();
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const pt = entries[i];
+    const dObj = new Date(pt.date + 'T00:00:00Z');
+    const monthYear = dObj.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    if (!historyGroupsMap.has(monthYear)) {
+      historyGroupsMap.set(monthYear, []);
+    }
+    historyGroupsMap.get(monthYear)!.push(pt);
+  }
+
+  const historyGroups: ExpenditureHistoryGroup[] = Array.from(historyGroupsMap.entries()).map(([monthYear, items]) => ({
+    monthYear,
+    monthName: monthYear,
+    entries: items,
+    items
+  }));
+
+  const currentStrategy: 'Updating' | 'Holding' | 'Static' =
+    latest?.strategy === 'static' ? 'Static' : latest?.isHolding ? 'Holding' : 'Updating';
 
   return {
     entries,
     header: {
-      average: baseTdee,
-      differenceFormatted: '0 kcal',
-      rawDifference: 0,
-      dateRangeSubtitle: 'Day 1 Baseline',
+      average: header?.expenditure.average ?? (latest ? latest.tdee : baseTdee),
+      differenceFormatted: header?.expenditure.differenceFormatted ?? '0 kcal',
+      rawDifference: header?.expenditure.rawDifference ?? 0,
+      dateRangeSubtitle: header?.dateRangeSubtitle ?? '—'
     },
-    changes: {
-      threeDay: { delta: '0', status: 'Plateau' },
-      sevenDay: { delta: '0', status: 'Plateau' },
-      fourteenDay: { delta: '0', status: 'Plateau' },
-      thirtyDay: { delta: '0', status: 'Plateau' },
-      ninetyDay: { delta: '0', status: 'Plateau' },
-    },
-    currentExpenditure: baseTdee,
-    currentStrategy: 'Holding',
+    changes: changeByHorizon,
+    currentExpenditure: latest ? latest.tdee : baseTdee,
+    currentStrategy,
     flux: {
-      lower: baseTdee - 45,
-      upper: baseTdee + 45,
+      lower: latest ? latest.fluxLower : baseTdee - 45,
+      upper: latest ? latest.fluxUpper : baseTdee + 45
     },
-    historyGroups,
+    historyGroups
   };
 }
 
 export function buildUserTrendData(
   _email: string,
   onboarding: any,
-  logs: LogItem[]
+  logs: LogItem[],
+  timeframe: '1W' | '1M' | '3M' | '6M' | '1Y' | 'All' = '1M'
 ): TrendResponse {
   const curW = Number(onboarding?.startingWeightKg) || 78.0;
-  const todayStr = new Date().toISOString().split('T')[0];
+  const processedDays = getProcessedUserDays(onboarding, logs);
+  const latest = processedDays[processedDays.length - 1];
 
-  const entries: WeightTrendPoint[] = logs
-    .slice(0, 14)
-    .reverse()
-    .map((l) => ({
-      date: l.date,
-      scaleWeight: l.scaleWeight ?? null,
-      trendWeight: l.trendWeight ?? l.scaleWeight ?? curW,
-      velocity: 0,
-      noiseRangeLower: curW - 0.2,
-      noiseRangeUpper: curW + 0.2,
-    }));
+  const header = calculateHeaderMetrics(processedDays, timeframe);
+  const horizonChanges = calculateMultiHorizonChanges(processedDays);
+  const typicalMetrics = calculate21DayTypicalMetrics(processedDays);
 
-  if (entries.length === 0) {
-    entries.push({
-      date: todayStr,
-      scaleWeight: curW,
-      trendWeight: curW,
-      velocity: 0,
-      noiseRangeLower: curW - 0.2,
-      noiseRangeUpper: curW + 0.2,
-    });
+  const entries: WeightTrendPoint[] = processedDays.map(d => ({
+    date: d.date,
+    scaleWeight: d.rawWeight,
+    trendWeight: d.trendWeight,
+    velocity: d.weightVelocityKgPerDay,
+    noiseRangeLower: d.noiseRangeLower,
+    noiseRangeUpper: d.noiseRangeUpper
+  }));
+
+  const changeByHorizon: HorizonRecord = {
+    threeDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+    sevenDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+    fourteenDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+    thirtyDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+    ninetyDay: { delta: '—', status: 'Waiting', sparklinePoints: [] }
+  };
+  const keyMap: Record<number, keyof HorizonRecord> = {
+    3: 'threeDay',
+    7: 'sevenDay',
+    14: 'fourteenDay',
+    30: 'thirtyDay',
+    90: 'ninetyDay'
+  };
+  for (const h of horizonChanges) {
+    const key = keyMap[h.horizonDays];
+    if (key) {
+      changeByHorizon[key] = {
+        delta: h.weightDeltaFormatted,
+        status: h.weightStatus,
+        sparklinePoints: h.sparklineTrendPoints
+      };
+    }
   }
-
-  const latestWithWeight = logs.find(
-    (l) => l.scaleWeight !== null && l.scaleWeight !== undefined
-  );
-  const currentWeight = latestWithWeight ? (latestWithWeight.scaleWeight as number) : curW;
 
   return {
     entries,
     header: {
-      average: currentWeight,
-      differenceFormatted: '0.0 kg',
-      rawDifference: 0,
-      dateRangeSubtitle: 'Day 1 Baseline',
+      average: header?.weight.average ?? (latest ? latest.trendWeight : curW),
+      differenceFormatted: header?.weight.differenceFormatted ?? '0.0 kg',
+      rawDifference: header?.weight.rawDifference ?? 0,
+      dateRangeSubtitle: header?.dateRangeSubtitle ?? '—'
     },
-    changes: {
-      threeDay: { delta: '0.0 kg', status: 'Plateau' },
-      sevenDay: { delta: '0.0 kg', status: 'Plateau' },
-      fourteenDay: { delta: '0.0 kg', status: 'Plateau' },
-      thirtyDay: { delta: '0.0 kg', status: 'Plateau' },
-      ninetyDay: { delta: '0.0 kg', status: 'Plateau' },
-    },
+    changes: changeByHorizon,
     analytics: {
-      currentWeight,
-      weeklyRateKg: 0,
-      dailyDeficitKcal: 0,
-      projected30d: currentWeight,
-    },
+      currentWeight: typicalMetrics?.currentTrendWeightKg ?? (latest ? latest.trendWeight : curW),
+      weeklyRateKg: typicalMetrics?.weeklyRateKg ?? null,
+      weeklyRateFormatted: typicalMetrics?.weeklyRateFormatted ?? '—',
+      dailyDeficitKcal: typicalMetrics?.dailyDeficitKcal ?? null,
+      dailyDeficitFormatted: typicalMetrics?.dailyDeficitFormatted ?? '—',
+      projected30d: typicalMetrics?.projected30dKg ?? null
+    }
   };
 }
 
 export function buildUserStrategyData(
   _email: string,
-  onboarding: any
+  onboarding: any,
+  logs: LogItem[] = []
 ): StrategyResponse {
   const curW = Number(onboarding?.startingWeightKg) || 78.0;
-  const baseTdee = Number(onboarding?.baselineTdee) || 2340;
+  const baseTdee = Number(onboarding?.baselineTdee) || 2050;
   const todayStr = new Date().toISOString().split('T')[0];
+  const processedDays = getProcessedUserDays(onboarding, logs);
+  const latest = processedDays[processedDays.length - 1];
+
+  const currentTdee = latest ? latest.tdee : baseTdee;
+  const currentTrendWeight = latest ? latest.trendWeight : curW;
 
   const goalType = onboarding?.goal?.goalType || 'weight_loss';
   const targetW =
@@ -591,8 +669,8 @@ export function buildUserStrategyData(
 
   const targetCalories =
     Number(onboarding?.program?.targetCalories) ||
-    Math.round(baseTdee - (weeklyRateKg * 7700) / 7);
-  const dailyDeficit = Math.round(baseTdee - targetCalories);
+    Math.round(currentTdee - (weeklyRateKg * 7700) / 7);
+  const dailyDeficit = Math.round(currentTdee - targetCalories);
 
   const higherDays: number[] = onboarding?.program?.higherCalorieDays || [];
   const surplus = Number(onboarding?.program?.higherCalorieSurplus) || 300;
@@ -633,14 +711,31 @@ export function buildUserStrategyData(
     fastCheckIn: false,
   };
 
+  const last7Days = processedDays.slice(-7);
+  let nutritionDays = 0;
+  let weightDays = 0;
+  const partialDays: string[] = [];
+  for (const day of last7Days) {
+    if (day.rawWeight !== null && !isNaN(day.rawWeight)) {
+      weightDays++;
+    }
+    if (day.isValidIntake) {
+      nutritionDays++;
+    }
+  }
+  const meetsNutrition = nutritionDays >= 4;
+  const meetsWeight = weightDays >= 1;
+  const isHolding = !meetsNutrition || !meetsWeight;
+  const statusText = meetsNutrition && meetsWeight ? 'Meets Check-in Criteria' : 'Logging requirement pending';
+
   const compliance: LoggingCompliance = {
-    nutritionDays: 0,
-    weightDays: 1,
-    meetsNutrition: false,
-    meetsWeight: true,
-    isHolding: true,
-    partialDays: [],
-    statusText: 'Day 1 setup',
+    nutritionDays,
+    weightDays,
+    meetsNutrition,
+    meetsWeight,
+    isHolding,
+    partialDays,
+    statusText,
   };
 
   const nextWeek = new Date();
@@ -659,8 +754,8 @@ export function buildUserStrategyData(
       programStyle: onboarding?.program?.programStyle || 'coached',
       dailyTargets,
     },
-    currentTdee: baseTdee,
-    currentTrendWeight: curW,
+    currentTdee,
+    currentTrendWeight,
     goal,
     fastCheckIn: false,
     biologicalSex: onboarding?.biologicalSex || 'male',
@@ -680,7 +775,15 @@ export function buildUserScaleWeightData(
   );
   const avgWeight = latestWithWeight ? (latestWithWeight.scaleWeight as number) : curW;
 
-  const pointsCount = timeframe === '1M' ? 30 : 7;
+  const pointsMap: Record<string, number> = {
+    '1W': 7,
+    '1M': 30,
+    '3M': 90,
+    '6M': 180,
+    '1Y': 365,
+    'All': Math.max(30, logs.length)
+  };
+  const pointsCount = pointsMap[timeframe] || 7;
   const chartPoints: ScaleWeightChartPoint[] = [];
   const now = new Date();
 

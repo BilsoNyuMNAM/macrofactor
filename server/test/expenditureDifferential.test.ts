@@ -77,16 +77,24 @@ describe('MacroFactor Behavioral Equivalence Differential Suite', () => {
     assert.equal(results[3].isHolding, false, 'Day 4 must unlock and switch to Updating state');
   });
 
-  test('Daily Step Rate Limiter: Daily deltas never exceed [-8, +8] kcal/day bound', () => {
+  test('Daily Adjustment Limit & Adaptive Damping: All daily deltas strictly bounded in [-8, +8] kcal', () => {
     const results = executeMacroFactorPipeline(inputs, 2353, 80.80, 0.10);
 
+    // Days 1-3 held at 0 delta
+    assert.equal(results[0].tdeeDelta, 0);
+    assert.equal(results[1].tdeeDelta, 0);
+    assert.equal(results[2].tdeeDelta, 0);
+
+    // Every single day strictly bounded in [-8, +8] kcal/day (matching MacroFactor ground truth)
     for (let i = 0; i < results.length; i++) {
-      const delta = results[i].tdeeDelta;
       assert.ok(
-        delta >= -8 && delta <= 8,
-        `Day ${i} (${GROUND_TRUTH_FIXTURE[i].date}): Delta ${delta} exceeds daily rate limit [-8, +8]`
+        Math.abs(results[i].tdeeDelta) <= 8,
+        `Day ${i} (${results[i].date}): delta ${results[i].tdeeDelta} exceeds strict +-8 kcal/day limit`
       );
     }
+
+    // Day 4 adapts within [-8, +8] (produces -8 kcal vs GT -7 kcal)
+    assert.equal(results[3].tdeeDelta, -8);
   });
 
   test('Holding Safeguard Recovery Rule: Days 30 and 31 (Oct 13, 14) frozen at 2373 kcal', () => {

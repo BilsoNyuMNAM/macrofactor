@@ -47,17 +47,14 @@ export const App: React.FC = () => {
   const [authView, setAuthView] = useState<'checking' | 'intro' | 'auth_signup' | 'auth_login' | 'wizard' | 'dashboard'>(() => {
     const token = localStorage.getItem('mf_auth_token');
     const isCompleted = localStorage.getItem('isOnboardingComplete');
-    if (token && isCompleted === 'true') {
+    const email = localStorage.getItem('mf_user_email');
+    if (token && isCompleted === 'true' && email) {
       return 'dashboard';
     }
     if (token && isCompleted !== 'true') {
       return 'wizard';
     }
-    // Auto-initialize demo mode for immediate access if no token exists yet
-    localStorage.setItem('mf_auth_token', 'demo_token');
-    localStorage.setItem('isOnboardingComplete', 'true');
-    localStorage.setItem('mf_user_email', 'demo@macrofactor.app');
-    return 'dashboard';
+    return 'intro';
   });
 
   const [userEmail, setUserEmail] = useState<string>(() => {
@@ -129,6 +126,50 @@ export const App: React.FC = () => {
   const refreshAll = useCallback(async (targetEmail?: string) => {
     try {
       setLoading(true);
+      const effectiveEmail = targetEmail ?? localStorage.getItem('mf_user_email') ?? userEmail;
+      const isDemo = getIsDemoUser(effectiveEmail);
+      const token = localStorage.getItem('mf_auth_token');
+      const isCompleted = localStorage.getItem('isOnboardingComplete') === 'true';
+
+      // Guard: Do not generate placeholder data when user is in onboarding wizard mode
+      if (!isDemo && (authView === 'wizard' || !isCompleted)) {
+        if (!token) {
+          setAuthView((prev) => (prev === 'checking' ? 'intro' : prev));
+        } else if (!isCompleted) {
+          setAuthView((prev) => (prev === 'checking' ? 'wizard' : prev));
+        }
+        if (!isCompleted) {
+          setLoading(false);
+          return;
+        }
+      }
+
+      if (!isDemo && effectiveEmail) {
+        // Build fresh Day-1 / user-scoped MacroFactor experience for registered users
+        const onboarding = getUserOnboarding(effectiveEmail);
+        const userLogs = getUserLogs(effectiveEmail, onboarding);
+        const dash = buildUserDashboardData(effectiveEmail, onboarding, userLogs);
+        const exp = buildUserExpenditureData(effectiveEmail, onboarding, userLogs);
+        const trend = buildUserTrendData(effectiveEmail, onboarding, userLogs);
+        const strat = buildUserStrategyData(effectiveEmail, onboarding, userLogs);
+
+        setDashboardData(dash);
+        setExpenditureData(exp);
+        setTrendData(trend);
+        setLogs(userLogs);
+        setStrategyData(strat);
+
+        if (!token) {
+          setAuthView((prev) => (prev === 'checking' ? 'intro' : prev));
+        } else if (isCompleted) {
+          setAuthView('dashboard');
+        } else {
+          setAuthView('wizard');
+        }
+        return;
+      }
+
+      // Demo account mode: fetch pre-seeded backend database
       const [dash, exp, trend, logsRes, strat] = await Promise.all([
         api.getDashboard(),
         api.getExpenditure(),
@@ -143,12 +184,13 @@ export const App: React.FC = () => {
       setLogs(logsRes?.logs ?? []);
       setStrategyData(strat);
 
-      // Ensure user is marked onboarded in localStorage for instant access
-      localStorage.setItem('isOnboardingComplete', 'true');
-      if (!localStorage.getItem('mf_auth_token')) {
-        localStorage.setItem('mf_auth_token', 'demo_token');
+      if (!token) {
+        setAuthView((prev) => (prev === 'checking' ? 'intro' : prev));
+      } else if (isCompleted) {
+        setAuthView('dashboard');
+      } else {
+        setAuthView('wizard');
       }
-      setAuthView('dashboard');
     } catch (err) {
       console.warn('API refreshAll failed, using local mock data:', err);
       const effectiveEmail = targetEmail ?? localStorage.getItem('mf_user_email') ?? userEmail;
@@ -158,20 +200,26 @@ export const App: React.FC = () => {
       setExpenditureData(buildUserExpenditureData(effectiveEmail, onboarding, userLogs));
       setTrendData(buildUserTrendData(effectiveEmail, onboarding, userLogs));
       setLogs(userLogs);
-      setStrategyData(buildUserStrategyData(effectiveEmail, onboarding));
+      setStrategyData(buildUserStrategyData(effectiveEmail, onboarding, userLogs));
     } finally {
       setLoading(false);
     }
-  }, [userEmail]);
+  }, [userEmail, authView]);
 
   useEffect(() => {
     // Harmonize active session with backend user account
-    fetch('/api/auth/me')
+    const storedEmail = localStorage.getItem('mf_user_email');
+    if (!storedEmail) return;
+
+    fetch(`/api/auth/me?email=${encodeURIComponent(storedEmail)}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data?.authenticated && data?.user?.email) {
           setUserEmail(data.user.email);
           localStorage.setItem('mf_user_email', data.user.email);
+          if (data.user.onboardingData) {
+            setUserOnboarding(data.user.email, data.user.onboardingData);
+          }
         }
       })
       .catch(() => {});
@@ -190,14 +238,10 @@ export const App: React.FC = () => {
     isPartial?: boolean;
   }) => {
     try {
-      try {
+      if (userEmail && !getIsDemoUser(userEmail)) {
+        saveUserLog(userEmail, data);
+      } else {
         await api.saveLog(data);
-      } catch (backendErr) {
-        if (userEmail && !getIsDemoUser(userEmail)) {
-          saveUserLog(userEmail, data);
-        } else {
-          throw backendErr;
-        }
       }
       showToast(`Saved entry for ${data.date}`);
       await refreshAll();
@@ -208,14 +252,10 @@ export const App: React.FC = () => {
 
   const handleDeleteLog = async (date: string) => {
     try {
-      try {
+      if (userEmail && !getIsDemoUser(userEmail)) {
+        deleteUserLog(userEmail, date);
+      } else {
         await api.deleteLog(date);
-      } catch (backendErr) {
-        if (userEmail && !getIsDemoUser(userEmail)) {
-          deleteUserLog(userEmail, date);
-        } else {
-          throw backendErr;
-        }
       }
       showToast(`Deleted ${date}`);
       await refreshAll();
@@ -226,15 +266,18 @@ export const App: React.FC = () => {
 
   const handleCompleteCheckIn = async (holdExisting: boolean, goalRatePercent?: number) => {
     try {
-      try {
+      if (userEmail && !getIsDemoUser(userEmail)) {
+        if (goalRatePercent !== undefined) {
+          const onboarding = getUserOnboarding(userEmail) || {};
+          if (onboarding.goal) {
+            onboarding.goal.weeklyRatePercent = goalRatePercent;
+            setUserOnboarding(userEmail, onboarding);
+          }
+        }
+        showToast('Check-in finalized successfully! Program updated.');
+      } else {
         const res = await api.submitCheckIn({ holdExisting, goalRatePercent });
         showToast(res.message);
-      } catch (backendErr) {
-        if (userEmail && !getIsDemoUser(userEmail)) {
-          showToast('Check-in finalized successfully! Program updated.');
-        } else {
-          throw backendErr;
-        }
       }
       await refreshAll();
     } catch (err) {
@@ -244,16 +287,12 @@ export const App: React.FC = () => {
 
   const handleSaveCheckInDay = async (day: number) => {
     try {
-      try {
+      if (userEmail && !getIsDemoUser(userEmail)) {
+        const onboarding = getUserOnboarding(userEmail) || {};
+        onboarding.checkInDay = day;
+        setUserOnboarding(userEmail, onboarding);
+      } else {
         await api.setCheckInDay(day);
-      } catch (backendErr) {
-        if (userEmail && !getIsDemoUser(userEmail)) {
-          const onboarding = getUserOnboarding(userEmail) || {};
-          onboarding.checkInDay = day;
-          setUserOnboarding(userEmail, onboarding);
-        } else {
-          throw backendErr;
-        }
       }
       showToast('Check-in day updated');
       await refreshAll();
@@ -265,16 +304,12 @@ export const App: React.FC = () => {
   const handleToggleFastCheckIn = async (val?: boolean) => {
     try {
       const nextVal = val !== undefined ? val : !(strategyData?.fastCheckIn ?? false);
-      try {
+      if (userEmail && !getIsDemoUser(userEmail)) {
+        const onboarding = getUserOnboarding(userEmail) || {};
+        onboarding.fastCheckIn = nextVal;
+        setUserOnboarding(userEmail, onboarding);
+      } else {
         await api.setFastCheckIn(nextVal);
-      } catch (backendErr) {
-        if (userEmail && !getIsDemoUser(userEmail)) {
-          const onboarding = getUserOnboarding(userEmail) || {};
-          onboarding.fastCheckIn = nextVal;
-          setUserOnboarding(userEmail, onboarding);
-        } else {
-          throw backendErr;
-        }
       }
       showToast(`Fast Check-In ${nextVal ? 'Enabled' : 'Disabled'}`);
       await refreshAll();
@@ -290,20 +325,16 @@ export const App: React.FC = () => {
     biologicalSex?: string;
   }) => {
     try {
-      try {
+      if (userEmail && !getIsDemoUser(userEmail)) {
+        const onboarding = getUserOnboarding(userEmail) || {};
+        onboarding.startingWeightKg = data.currentWeight;
+        onboarding.baselineTdee = data.baselineTdee;
+        if (data.biologicalSex) onboarding.biologicalSex = data.biologicalSex;
+        if (!onboarding.goal) onboarding.goal = {};
+        onboarding.goal.targetWeightKg = data.goalWeight;
+        setUserOnboarding(userEmail, onboarding);
+      } else {
         await api.updateProfile(data);
-      } catch (backendErr) {
-        if (userEmail && !getIsDemoUser(userEmail)) {
-          const onboarding = getUserOnboarding(userEmail) || {};
-          onboarding.startingWeightKg = data.currentWeight;
-          onboarding.baselineTdee = data.baselineTdee;
-          if (data.biologicalSex) onboarding.biologicalSex = data.biologicalSex;
-          if (!onboarding.goal) onboarding.goal = {};
-          onboarding.goal.targetWeightKg = data.goalWeight;
-          setUserOnboarding(userEmail, onboarding);
-        } else {
-          throw backendErr;
-        }
       }
       showToast(`Profile & baseline updated!`);
       await refreshAll();
@@ -315,14 +346,10 @@ export const App: React.FC = () => {
   const handleConfirmClearLogs = async () => {
     if (window.confirm('Clear all log entries? Your program and metabolic baseline will be preserved.')) {
       try {
-        try {
+        if (userEmail && !getIsDemoUser(userEmail)) {
+          clearUserLogs(userEmail);
+        } else {
           await api.resetLogs();
-        } catch (backendErr) {
-          if (userEmail && !getIsDemoUser(userEmail)) {
-            clearUserLogs(userEmail);
-          } else {
-            throw backendErr;
-          }
         }
         showToast('All daily logs cleared');
         await refreshAll();
@@ -338,22 +365,19 @@ export const App: React.FC = () => {
     recalculateProgramNow?: boolean;
   }) => {
     try {
-      try {
+      if (userEmail && !getIsDemoUser(userEmail)) {
+        const onboarding = getUserOnboarding(userEmail) || {};
+        if (!onboarding.goal) onboarding.goal = {};
+        if (data.targetWeightKg !== undefined) onboarding.goal.targetWeightKg = data.targetWeightKg;
+        if (data.weeklyRatePercent !== undefined) onboarding.goal.weeklyRatePercent = data.weeklyRatePercent;
+        setUserOnboarding(userEmail, onboarding);
+        showToast('Goal parameters updated');
+      } else {
         if (strategyData?.goal) {
           await api.updateGoal(strategyData.goal.goalId, data);
         }
-      } catch (backendErr) {
-        if (userEmail && !getIsDemoUser(userEmail)) {
-          const onboarding = getUserOnboarding(userEmail) || {};
-          if (!onboarding.goal) onboarding.goal = {};
-          if (data.targetWeightKg !== undefined) onboarding.goal.targetWeightKg = data.targetWeightKg;
-          if (data.weeklyRatePercent !== undefined) onboarding.goal.weeklyRatePercent = data.weeklyRatePercent;
-          setUserOnboarding(userEmail, onboarding);
-        } else {
-          throw backendErr;
-        }
+        showToast('Goal parameters updated');
       }
-      showToast('Goal parameters updated');
       await refreshAll();
     } catch (err) {
       showToast('Failed to update goal', false);
@@ -367,20 +391,16 @@ export const App: React.FC = () => {
     weeklyRatePercent: number;
   }) => {
     try {
-      try {
+      if (userEmail && !getIsDemoUser(userEmail)) {
+        const onboarding = getUserOnboarding(userEmail) || {};
+        onboarding.goal = {
+          goalType: data.goalType,
+          targetWeightKg: data.targetWeightKg,
+          weeklyRatePercent: data.weeklyRatePercent,
+        };
+        setUserOnboarding(userEmail, onboarding);
+      } else {
         await api.createGoal(data);
-      } catch (backendErr) {
-        if (userEmail && !getIsDemoUser(userEmail)) {
-          const onboarding = getUserOnboarding(userEmail) || {};
-          onboarding.goal = {
-            goalType: data.goalType,
-            targetWeightKg: data.targetWeightKg,
-            weeklyRatePercent: data.weeklyRatePercent,
-          };
-          setUserOnboarding(userEmail, onboarding);
-        } else {
-          throw backendErr;
-        }
       }
       showToast('New goal activated! Please configure your new nutrition program.');
       await refreshAll();
@@ -399,22 +419,18 @@ export const App: React.FC = () => {
     higherCalorieSurplus?: number;
   }) => {
     try {
-      try {
+      if (userEmail && !getIsDemoUser(userEmail)) {
+        const onboarding = getUserOnboarding(userEmail) || {};
+        if (!onboarding.program) onboarding.program = {};
+        onboarding.program.programStyle = data.programStyle;
+        if (data.targetCalories) onboarding.program.targetCalories = data.targetCalories;
+        if (data.higherCalorieDays) onboarding.program.higherCalorieDays = data.higherCalorieDays;
+        if (data.higherCalorieSurplus) onboarding.program.higherCalorieSurplus = data.higherCalorieSurplus;
+        setUserOnboarding(userEmail, onboarding);
+        showToast('New program activated successfully');
+      } else {
         const res = await api.createProgram(data);
         showToast(res.message);
-      } catch (backendErr) {
-        if (userEmail && !getIsDemoUser(userEmail)) {
-          const onboarding = getUserOnboarding(userEmail) || {};
-          if (!onboarding.program) onboarding.program = {};
-          onboarding.program.programStyle = data.programStyle;
-          if (data.targetCalories) onboarding.program.targetCalories = data.targetCalories;
-          if (data.higherCalorieDays) onboarding.program.higherCalorieDays = data.higherCalorieDays;
-          if (data.higherCalorieSurplus) onboarding.program.higherCalorieSurplus = data.higherCalorieSurplus;
-          setUserOnboarding(userEmail, onboarding);
-          showToast('New program activated successfully');
-        } else {
-          throw backendErr;
-        }
       }
       await refreshAll();
     } catch (err: any) {
@@ -431,22 +447,18 @@ export const App: React.FC = () => {
     higherCalorieSurplus?: number;
   }) => {
     try {
-      try {
+      if (userEmail && !getIsDemoUser(userEmail)) {
+        const onboarding = getUserOnboarding(userEmail) || {};
+        if (!onboarding.program) onboarding.program = {};
+        if (data.programStyle) onboarding.program.programStyle = data.programStyle;
+        if (data.targetCalories) onboarding.program.targetCalories = data.targetCalories;
+        if (data.higherCalorieDays) onboarding.program.higherCalorieDays = data.higherCalorieDays;
+        if (data.higherCalorieSurplus) onboarding.program.higherCalorieSurplus = data.higherCalorieSurplus;
+        setUserOnboarding(userEmail, onboarding);
+        showToast('Program updated successfully');
+      } else {
         const res = await api.updateProgram(data);
         showToast(res.message);
-      } catch (backendErr) {
-        if (userEmail && !getIsDemoUser(userEmail)) {
-          const onboarding = getUserOnboarding(userEmail) || {};
-          if (!onboarding.program) onboarding.program = {};
-          if (data.programStyle) onboarding.program.programStyle = data.programStyle;
-          if (data.targetCalories) onboarding.program.targetCalories = data.targetCalories;
-          if (data.higherCalorieDays) onboarding.program.higherCalorieDays = data.higherCalorieDays;
-          if (data.higherCalorieSurplus) onboarding.program.higherCalorieSurplus = data.higherCalorieSurplus;
-          setUserOnboarding(userEmail, onboarding);
-          showToast('Program updated successfully');
-        } else {
-          throw backendErr;
-        }
       }
       await refreshAll();
     } catch (err: any) {
@@ -458,20 +470,16 @@ export const App: React.FC = () => {
   const handleDeleteGoal = async (goalId: number) => {
     try {
       let requiresNewProgram = false;
-      try {
+      if (userEmail && !getIsDemoUser(userEmail)) {
+        const onboarding = getUserOnboarding(userEmail) || {};
+        delete onboarding.goal;
+        setUserOnboarding(userEmail, onboarding);
+        showToast('Goal retired');
+        requiresNewProgram = true;
+      } else {
         const res = await api.deleteGoal(goalId);
         showToast(res.message);
         requiresNewProgram = Boolean(res.requiresNewProgram);
-      } catch (backendErr) {
-        if (userEmail && !getIsDemoUser(userEmail)) {
-          const onboarding = getUserOnboarding(userEmail) || {};
-          delete onboarding.goal;
-          setUserOnboarding(userEmail, onboarding);
-          showToast('Goal retired');
-          requiresNewProgram = true;
-        } else {
-          throw backendErr;
-        }
       }
       await refreshAll();
       if (requiresNewProgram) {
@@ -485,23 +493,19 @@ export const App: React.FC = () => {
 
   const handleTransitionToMaintenance = async () => {
     try {
-      try {
+      if (userEmail && !getIsDemoUser(userEmail)) {
+        const onboarding = getUserOnboarding(userEmail) || {};
+        if (!onboarding.goal) onboarding.goal = {};
+        onboarding.goal.goalType = 'maintenance';
+        onboarding.goal.weeklyRatePercent = 0;
+        onboarding.goal.targetWeightKg = null;
+        setUserOnboarding(userEmail, onboarding);
+      } else {
         await api.createGoal({
           goalType: 'maintenance',
           weeklyRatePercent: 0,
           targetWeightKg: null
         });
-      } catch (backendErr) {
-        if (userEmail && !getIsDemoUser(userEmail)) {
-          const onboarding = getUserOnboarding(userEmail) || {};
-          if (!onboarding.goal) onboarding.goal = {};
-          onboarding.goal.goalType = 'maintenance';
-          onboarding.goal.weeklyRatePercent = 0;
-          onboarding.goal.targetWeightKg = null;
-          setUserOnboarding(userEmail, onboarding);
-        } else {
-          throw backendErr;
-        }
       }
       showToast('Transitioned to Maintenance Mode! Targets locked to expenditure.');
       await refreshAll();
@@ -628,6 +632,7 @@ export const App: React.FC = () => {
         {activeView === 'trend' && (
           <WeightTrendView
             data={trendData}
+            userEmail={userEmail}
             onRefresh={refreshAll}
             onShowToast={showToast}
           />
@@ -636,6 +641,7 @@ export const App: React.FC = () => {
         {activeView === 'expenditure' && (
           <ExpenditureView
             data={expenditureData}
+            userEmail={userEmail}
             onRefresh={refreshAll}
             onShowToast={showToast}
           />
@@ -644,6 +650,7 @@ export const App: React.FC = () => {
         {activeView === 'strategy' && strategyData && (
           <StrategyView
             data={strategyData}
+            userEmail={userEmail}
             onOpenCheckInModal={() => setIsCheckInModalOpen(true)}
             onOpenChangeDayModal={() => setIsChangeDayModalOpen(true)}
             onToggleFastCheckIn={() => handleToggleFastCheckIn()}
@@ -793,6 +800,8 @@ export const App: React.FC = () => {
         onDeleteGoal={handleDeleteGoal}
         onOpenNewProgramModal={() => setIsNewProgramModalOpen(true)}
         onOpenCreateGoalModal={() => setIsCreateGoalModalOpen(true)}
+        activeGoal={strategyData?.goal}
+        userEmail={userEmail}
       />
 
       {strategyData && isProgramUpdateModalOpen && (() => {

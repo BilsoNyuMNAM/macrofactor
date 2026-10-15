@@ -181,9 +181,7 @@ authRouter.get('/me', async (req, res) => {
         emailQuery.trim().toLowerCase()
       );
     } else {
-      rows = await prisma.$queryRawUnsafe(
-        'SELECT id, email, display_name, is_onboarded, onboarding_data FROM user_accounts ORDER BY id ASC LIMIT 1'
-      );
+      return res.json({ authenticated: false, user: null });
     }
 
     if (rows && rows.length > 0) {

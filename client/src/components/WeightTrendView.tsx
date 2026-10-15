@@ -9,11 +9,18 @@ import {
 } from 'lucide-react';
 import { TrendResponse, WeightTrendPoint } from '../types';
 import { api } from '../api';
+import {
+  getIsDemoUser,
+  getUserOnboarding,
+  getUserLogs,
+  buildUserTrendData,
+} from '../utils/userContext';
 
 interface WeightTrendViewProps {
   data?: TrendResponse | null;
   onRefresh?: () => void;
   onShowToast: (msg: string) => void;
+  userEmail?: string;
 }
 
 // Catmull-Rom smooth spline helper for canvas and SVG
@@ -127,6 +134,7 @@ function drawSmoothSpline(
 export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
   data: initialData,
   onShowToast: _onShowToast,
+  userEmail,
 }) => {
   const [trendData, setTrendData] = useState<TrendResponse | null>(initialData || null);
   const [_loading, setLoading] = useState<boolean>(!initialData);
@@ -135,6 +143,14 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
   const fetchTrendData = useCallback(async (tf: '1W' | '1M' | '3M' | '6M' | '1Y' | 'All') => {
     try {
       setLoading(true);
+      const email = userEmail || localStorage.getItem('mf_user_email');
+      if (email && !getIsDemoUser(email)) {
+        const onboarding = getUserOnboarding(email);
+        const logs = getUserLogs(email, onboarding);
+        const userTrend = buildUserTrendData(email, onboarding, logs, tf);
+        setTrendData(userTrend);
+        return;
+      }
       const res = await api.getTrend(tf);
       setTrendData(res);
     } catch (err) {
@@ -142,7 +158,7 @@ export const WeightTrendView: React.FC<WeightTrendViewProps> = ({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [userEmail]);
 
   // Sync if prop updates
   useEffect(() => {

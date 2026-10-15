@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api';
 import { Goal } from '../types';
+import { getIsDemoUser } from '../utils/userContext';
 
 interface HistoricalGoalsModalProps {
   isOpen: boolean;
@@ -25,6 +26,8 @@ interface HistoricalGoalsModalProps {
   onDeleteGoal?: (goalId: number) => Promise<void>;
   onOpenNewProgramModal?: () => void;
   onOpenCreateGoalModal?: () => void;
+  activeGoal?: Goal | null;
+  userEmail?: string;
 }
 
 export const HistoricalGoalsModal: React.FC<HistoricalGoalsModalProps> = ({
@@ -34,6 +37,8 @@ export const HistoricalGoalsModal: React.FC<HistoricalGoalsModalProps> = ({
   onDeleteGoal,
   onOpenNewProgramModal,
   onOpenCreateGoalModal,
+  activeGoal,
+  userEmail,
 }) => {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -49,6 +54,11 @@ export const HistoricalGoalsModal: React.FC<HistoricalGoalsModalProps> = ({
   const reloadGoals = async () => {
     try {
       setLoading(true);
+      const email = userEmail || localStorage.getItem('mf_user_email');
+      if (email && !getIsDemoUser(email)) {
+        setGoals(activeGoal ? [activeGoal] : []);
+        return;
+      }
       const data = await api.getGoals();
       setGoals(data.goals || []);
     } catch (err: any) {
@@ -71,6 +81,13 @@ export const HistoricalGoalsModal: React.FC<HistoricalGoalsModalProps> = ({
       try {
         setLoading(true);
         setError(null);
+        const email = userEmail || localStorage.getItem('mf_user_email');
+        if (email && !getIsDemoUser(email)) {
+          if (isMounted) {
+            setGoals(activeGoal ? [activeGoal] : []);
+          }
+          return;
+        }
         const data = await api.getGoals();
         if (isMounted) {
           setGoals(data.goals || []);
@@ -90,7 +107,7 @@ export const HistoricalGoalsModal: React.FC<HistoricalGoalsModalProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [isOpen]);
+  }, [isOpen, activeGoal, userEmail]);
 
   if (!isOpen) return null;
 

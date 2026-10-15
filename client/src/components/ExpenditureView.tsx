@@ -12,11 +12,18 @@ import {
 } from 'lucide-react';
 import { ExpenditureResponse, TdeePoint } from '../types';
 import { api } from '../api';
+import {
+  getIsDemoUser,
+  getUserOnboarding,
+  getUserLogs,
+  buildUserExpenditureData,
+} from '../utils/userContext';
 
 interface ExpenditureViewProps {
   data?: ExpenditureResponse | null;
   onRefresh?: () => void;
   onShowToast: (msg: string) => void;
+  userEmail?: string;
 }
 
 // Catmull-Rom smooth spline helper for canvas and SVG
@@ -333,6 +340,7 @@ function computeExpenditureYTicks(
 export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
   data: initialData,
   onShowToast: _onShowToast,
+  userEmail,
 }) => {
   const [expData, setExpData] = useState<ExpenditureResponse | null>(initialData || null);
   const [_loading, setLoading] = useState<boolean>(!initialData);
@@ -343,6 +351,14 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
   const fetchExpenditureData = useCallback(async (tf: '1W' | '1M' | '3M' | '6M' | '1Y' | 'All') => {
     try {
       setLoading(true);
+      const email = userEmail || localStorage.getItem('mf_user_email');
+      if (email && !getIsDemoUser(email)) {
+        const onboarding = getUserOnboarding(email);
+        const logs = getUserLogs(email, onboarding);
+        const userExpData = buildUserExpenditureData(email, onboarding, logs, tf);
+        setExpData(userExpData);
+        return;
+      }
       const res = await api.getExpenditure(tf);
       setExpData(res);
     } catch (err) {
@@ -350,7 +366,7 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [userEmail]);
 
   // Sync when initialData changes
   useEffect(() => {

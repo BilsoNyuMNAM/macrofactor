@@ -137,7 +137,7 @@ exports.authRouter.get('/me', async (req, res) => {
             rows = await db_js_1.prisma.$queryRawUnsafe('SELECT id, email, display_name, is_onboarded, onboarding_data FROM user_accounts WHERE email = $1 LIMIT 1', emailQuery.trim().toLowerCase());
         }
         else {
-            rows = await db_js_1.prisma.$queryRawUnsafe('SELECT id, email, display_name, is_onboarded, onboarding_data FROM user_accounts ORDER BY id ASC LIMIT 1');
+            return res.json({ authenticated: false, user: null });
         }
         if (rows && rows.length > 0) {
             const user = rows[0];

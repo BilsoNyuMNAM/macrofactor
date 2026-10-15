@@ -82,9 +82,9 @@ describe('MacroFactor Expenditure Algorithm V3 Specification Tests', () => {
   });
 
   // ==========================================================================
-  // TEST 4: Adaptive Gain Trajectory Damping (0.08 for small, 0.16 for sustained)
+  // TEST 4: Adaptive Gain Trajectory Damping (0.08 / 9 damping, strictly clamped at +-8 kcal)
   // ==========================================================================
-  test('Adaptive Gain: Small fluctuations use K=0.08 without hard +-7 clamp', () => {
+  test('Adaptive Gain: Small fluctuations smoothly update with 9-day damping and +-8 clamp', () => {
     const baselineTdee = 2000;
     const initialWeight = 75.0;
 
@@ -101,8 +101,9 @@ describe('MacroFactor Expenditure Algorithm V3 Specification Tests', () => {
     const results = executeMacroFactorPipeline(logs, baselineTdee, initialWeight);
 
     // On Day 4 (first active day), raw gap is around 100 kcal (2100 - 2000)
-    // Delta should be Math.round(rawGap * 0.08) ≈ +8 kcal (proves no +-7 clamp!)
-    assert.ok(results[3].tdeeDelta >= 7, 'Day 4 delta should reflect K=0.08 adaptive gain');
+    // Damped delta = Math.round(100 * (0.08 / 9)) = +1 kcal
+    assert.equal(results[3].tdeeDelta, 1, 'Day 4 delta should reflect damped adaptive gain');
+    assert.ok(Math.abs(results[3].tdeeDelta) <= 8, 'Day 4 delta strictly respects +-8 clamp');
   });
 
   // ==========================================================================
@@ -377,6 +378,31 @@ describe('Expenditure API Contract & DTO Tests', () => {
         await prisma.tdeeEntry.upsert({ where: { logDate: td.logDate }, create: td, update: td });
       }
     }
+  });
+
+  test('POST and DELETE /api/expenditure/override sets static override and restores dynamic tracking', async () => {
+    // 1. Set override to 2500 kcal
+    const postRes = await fetch(`${baseUrl}/override`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ overrideTdeeKcal: 2500, reason: 'Metabolic Testing' })
+    });
+    assert.equal(postRes.status, 200);
+
+    // 2. Verify GET /api/expenditure reflects static strategy
+    const getRes = await fetch(baseUrl);
+    const getJson = await getRes.json();
+    assert.equal(getJson.currentStrategy, 'Static');
+    assert.equal(getJson.currentExpenditure, 2500);
+
+    // 3. Clear override
+    const delRes = await fetch(`${baseUrl}/override`, { method: 'DELETE' });
+    assert.equal(delRes.status, 200);
+
+    // 4. Verify restored
+    const restoredRes = await fetch(baseUrl);
+    const restoredJson = await restoredRes.json();
+    assert.notEqual(restoredJson.currentStrategy, 'Static');
   });
 });
 
