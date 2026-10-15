@@ -423,35 +423,41 @@ export function buildUserExpenditureData(
   const entries: TdeePoint[] = logs
     .slice(0, 14)
     .reverse()
-    .map((l) => ({
-      date: l.date,
-      tdee: l.tdee ?? baseTdee,
-      fluxUpper: (l.tdee ?? baseTdee) + 45,
-      fluxLower: (l.tdee ?? baseTdee) - 45,
-      tdeeDelta: 0,
-      isHolding: true,
-    }));
+    .map((l) => {
+      const val = l.tdee ?? baseTdee;
+      return {
+        date: l.date,
+        tdee: val,
+        tdeeDelta: 0,
+        fluxLower: val - 45,
+        fluxUpper: val + 45,
+        fluxRadius: 45,
+        strategy: 'holding' as const,
+        isHolding: true,
+        confidenceScore: 0.5,
+      };
+    });
 
   if (entries.length === 0) {
     entries.push({
       date: todayStr,
       tdee: baseTdee,
-      fluxUpper: baseTdee + 45,
-      fluxLower: baseTdee - 45,
       tdeeDelta: 0,
+      fluxLower: baseTdee - 45,
+      fluxUpper: baseTdee + 45,
+      fluxRadius: 45,
+      strategy: 'holding' as const,
       isHolding: true,
+      confidenceScore: 0.5,
     });
   }
 
   const historyGroups: ExpenditureHistoryGroup[] = [
     {
+      monthYear: 'October 2026',
       monthName: 'October 2026',
-      items: entries.map((e) => ({
-        date: e.date,
-        tdee: e.tdee,
-        tdeeDelta: 0,
-        isHolding: true,
-      })),
+      entries,
+      items: entries,
     },
   ];
 

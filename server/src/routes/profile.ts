@@ -70,7 +70,7 @@ profileRouter.put('/', async (req, res) => {
 profileRouter.post('/reset-logs', async (_req, res) => {
   try {
     await prisma.scaleWeightEntry.deleteMany();
-    await prisma.dailyNutritionRollup.deleteMany();
+    await prisma.dailyCalorieLog.deleteMany();
     await prisma.weightTrendEntry.deleteMany();
     await prisma.tdeeEntry.deleteMany();
 

@@ -96,9 +96,9 @@ describe('Goal Math & Physiological Calorie Floor Service', () => {
       const metrics = solveGoalMetrics(2500, 75.0, 0.25, 80.0, 'male', 75.0);
 
       assert.equal(metrics.weeklyRateKg, 0.19);
-      // surplus using 8500 kcal/kg tissue gain: +0.25% * 75 * 8500 / 7 = +228 kcal
-      assert.equal(metrics.dailyDeficitKcal, 228);
-      assert.equal(metrics.projectedTargetCalories, 2728);
+      // surplus using symmetrical 7700 kcal/kg tissue gain: +0.25% * 75 * 7700 / 7 = +206 kcal
+      assert.equal(metrics.dailyDeficitKcal, 206);
+      assert.equal(metrics.projectedTargetCalories, 2706);
       assert.equal(metrics.calorieFloorWarning, 'none');
       assert.equal(metrics.classificationBand, 'slow');
     });

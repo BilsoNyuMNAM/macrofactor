@@ -76,15 +76,15 @@ const ExpenditureAreaSparkline: React.FC<{
     <svg width={width} height={height} className="overflow-visible">
       <defs>
         <linearGradient id={`expAreaGrad-${pts.length}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#F6805B" stopOpacity="0.35" />
-          <stop offset="100%" stopColor="#F6805B" stopOpacity="0.08" />
+          <stop offset="0%" stopColor="#FA6B4A" stopOpacity="0.35" />
+          <stop offset="100%" stopColor="#FA6B4A" stopOpacity="0.08" />
         </linearGradient>
       </defs>
       <path d={areaD} fill={`url(#expAreaGrad-${pts.length})`} stroke="none" />
       <path
         d={lineD}
         fill="none"
-        stroke="#F6805B"
+        stroke="#FA6B4A"
         strokeWidth="1.8"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -93,87 +93,132 @@ const ExpenditureAreaSparkline: React.FC<{
   );
 };
 
-// Canvas smooth Catmull-Rom spline drawer
-function drawSmoothSpline(
-  ctx: CanvasRenderingContext2D,
-  pts: { x: number; y: number }[],
-  tension: number = 0.25
-) {
-  if (pts.length < 2) return;
-  if (pts.length === 2) {
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    ctx.lineTo(pts[1].x, pts[1].y);
-    ctx.stroke();
-    return;
+interface Point2D {
+  x: number;
+  y: number;
+}
+
+interface BezierSegment {
+  p0: Point2D;
+  cp1: Point2D;
+  cp2: Point2D;
+  p1: Point2D;
+}
+
+/**
+ * Smooth natural / Catmull-Rom spline interpolation (SplineType.natural).
+ * Generates continuous smooth Bezier curves matching MacroFactor's expenditure chart.
+ */
+function computeMonotonicSegments(pts: Point2D[]): BezierSegment[] {
+  const n = pts.length;
+  if (n < 2) return [];
+
+  if (n === 2) {
+    const dx = pts[1].x - pts[0].x;
+    const dy = pts[1].y - pts[0].y;
+    return [
+      {
+        p0: pts[0],
+        cp1: { x: pts[0].x + dx / 3, y: pts[0].y + dy / 3 },
+        cp2: { x: pts[1].x - dx / 3, y: pts[1].y - dy / 3 },
+        p1: pts[1],
+      },
+    ];
   }
 
-  ctx.beginPath();
-  ctx.moveTo(pts[0].x, pts[0].y);
-
-  for (let i = 0; i < pts.length - 1; i++) {
+  const segments: BezierSegment[] = [];
+  for (let i = 0; i < n - 1; i++) {
     const p0 = i > 0 ? pts[i - 1] : pts[i];
     const p1 = pts[i];
     const p2 = pts[i + 1];
-    const p3 = i < pts.length - 2 ? pts[i + 2] : p2;
+    const p3 = i < n - 2 ? pts[i + 2] : p2;
 
-    const cp1x = p1.x + ((p2.x - p0.x) / 6) * (1 - tension);
-    const cp1y = p1.y + ((p2.y - p0.y) / 6) * (1 - tension);
-    const cp2x = p2.x - ((p3.x - p1.x) / 6) * (1 - tension);
-    const cp2y = p2.y - ((p3.y - p1.y) / 6) * (1 - tension);
+    // Catmull-Rom control points
+    let cp1x = p1.x + (p2.x - p0.x) / 6;
+    let cp1y = p1.y + (p2.y - p0.y) / 6;
+    let cp2x = p2.x - (p3.x - p1.x) / 6;
+    let cp2y = p2.y - (p3.y - p1.y) / 6;
 
-    ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+    // Prevent overshoot on flat horizontal segments (e.g. holding plateau)
+    if (Math.abs(p2.y - p1.y) < 0.001) {
+      if (Math.abs(p1.y - p0.y) < 0.001) cp1y = p1.y;
+      if (Math.abs(p3.y - p2.y) < 0.001) cp2y = p2.y;
+    }
+
+    segments.push({
+      p0: p1,
+      cp1: { x: cp1x, y: cp1y },
+      cp2: { x: cp2x, y: cp2y },
+      p1: p2,
+    });
   }
-  ctx.stroke();
+
+  return segments;
 }
 
-// Canvas smooth closed ribbon (flux corridor) drawer
-function drawSmoothRibbon(
+/**
+ * Series 1: Flux Range (Shaded Envelope)
+ * Type: SplineRangeAreaSeries<DataExperienceChartPoint, DateTime>
+ * borderDrawMode: RangeAreaBorderMode.excludeSides (draws upper/lower boundary curves, excludes vertical closing edges)
+ * splineType: SplineType.monotonic (prevents overshoot/unnatural loops)
+ * Color: Coral #FA6B4A at 0.18 opacity (dark) or 0.10 (light)
+ */
+function drawFluxRangeEnvelope(
   ctx: CanvasRenderingContext2D,
-  upperPts: { x: number; y: number }[],
-  lowerPts: { x: number; y: number }[],
-  tension: number = 0.2
+  upperPts: Point2D[],
+  lowerPts: Point2D[],
+  isDark: boolean = true
 ) {
   if (upperPts.length < 2 || lowerPts.length < 2) return;
 
+  const upperSegs = computeMonotonicSegments(upperPts);
+  const lowerSegs = computeMonotonicSegments(lowerPts);
+
+  // 1. Shaded area envelope fill
   ctx.beginPath();
   ctx.moveTo(upperPts[0].x, upperPts[0].y);
 
-  // 1. Forward along upper spline
-  for (let i = 0; i < upperPts.length - 1; i++) {
-    const p0 = i > 0 ? upperPts[i - 1] : upperPts[i];
-    const p1 = upperPts[i];
-    const p2 = upperPts[i + 1];
-    const p3 = i < upperPts.length - 2 ? upperPts[i + 2] : p2;
-
-    const cp1x = p1.x + ((p2.x - p0.x) / 6) * (1 - tension);
-    const cp1y = p1.y + ((p2.y - p0.y) / 6) * (1 - tension);
-    const cp2x = p2.x - ((p3.x - p1.x) / 6) * (1 - tension);
-    const cp2y = p2.y - ((p3.y - p1.y) / 6) * (1 - tension);
-
-    ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+  // Forward along upper monotonic spline
+  for (const seg of upperSegs) {
+    ctx.bezierCurveTo(seg.cp1.x, seg.cp1.y, seg.cp2.x, seg.cp2.y, seg.p1.x, seg.p1.y);
   }
 
-  // 2. Connect to end of lower spline
-  const revLower = [...lowerPts].reverse();
-  ctx.lineTo(revLower[0].x, revLower[0].y);
+  // Connect to end of lower spline
+  const lastLower = lowerPts[lowerPts.length - 1];
+  ctx.lineTo(lastLower.x, lastLower.y);
 
-  // 3. Backward along lower spline (forward along reversed array)
-  for (let i = 0; i < revLower.length - 1; i++) {
-    const p0 = i > 0 ? revLower[i - 1] : revLower[i];
-    const p1 = revLower[i];
-    const p2 = revLower[i + 1];
-    const p3 = i < revLower.length - 2 ? revLower[i + 2] : p2;
-
-    const cp1x = p1.x + ((p2.x - p0.x) / 6) * (1 - tension);
-    const cp1y = p1.y + ((p2.y - p0.y) / 6) * (1 - tension);
-    const cp2x = p2.x - ((p3.x - p1.x) / 6) * (1 - tension);
-    const cp2y = p2.y - ((p3.y - p1.y) / 6) * (1 - tension);
-
-    ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+  // Backward along lower monotonic spline
+  for (let i = lowerSegs.length - 1; i >= 0; i--) {
+    const seg = lowerSegs[i];
+    ctx.bezierCurveTo(seg.cp2.x, seg.cp2.y, seg.cp1.x, seg.cp1.y, seg.p0.x, seg.p0.y);
   }
 
   ctx.closePath();
+  ctx.fillStyle = isDark ? 'rgba(250, 107, 74, 0.18)' : 'rgba(250, 107, 74, 0.10)';
+  ctx.fill();
+
+  // 2. borderDrawMode: RangeAreaBorderMode.excludeSides
+  // (draws upper/lower boundary curves, excludes vertical closing edges)
+  const boundaryColor = isDark ? 'rgba(250, 107, 74, 0.40)' : 'rgba(250, 107, 74, 0.28)';
+  ctx.lineWidth = 1.0;
+  ctx.strokeStyle = boundaryColor;
+  ctx.setLineDash([]);
+
+  // Draw upper boundary curve only
+  ctx.beginPath();
+  ctx.moveTo(upperPts[0].x, upperPts[0].y);
+  for (const seg of upperSegs) {
+    ctx.bezierCurveTo(seg.cp1.x, seg.cp1.y, seg.cp2.x, seg.cp2.y, seg.p1.x, seg.p1.y);
+  }
+  ctx.stroke();
+
+  // Draw lower boundary curve only
+  ctx.beginPath();
+  ctx.moveTo(lowerPts[0].x, lowerPts[0].y);
+  for (const seg of lowerSegs) {
+    ctx.bezierCurveTo(seg.cp1.x, seg.cp1.y, seg.cp2.x, seg.cp2.y, seg.p1.x, seg.p1.y);
+  }
+  ctx.stroke();
 }
 
 // Typographic delta formatter
@@ -187,6 +232,102 @@ function formatDelta(delta: number | string | undefined): string {
   if (num === 0) return '0 kcal';
   if (num > 0) return `${num} kcal`;
   return `\u2212${Math.abs(num)} kcal`;
+}
+
+// Auto-scale bounds calculator based strictly upon daily expenditure values (strictly max 4 y-axis numbers)
+function computeExpenditureYTicks(
+  expMin: number,
+  expMax: number,
+  isTight: boolean = true
+): { yMin: number; yMax: number; step: number; count: number; ticks: number[] } {
+  if (!isFinite(expMin) || !isFinite(expMax) || expMin >= expMax) {
+    const center = isFinite(expMin) ? Math.round(expMin) : 2400;
+    const step = 50;
+    const base = Math.floor(center / step) * step;
+    return {
+      yMin: base - 50,
+      yMax: base + 50,
+      step: 50,
+      count: 3,
+      ticks: [base - 50, base, base + 50],
+    };
+  }
+
+  // Margin around daily expenditure range
+  const margin = isTight ? 2 : 8;
+  const targetMin = expMin - margin;
+  const targetMax = expMax + margin;
+  const span = targetMax - targetMin;
+
+  // Nice human step values
+  const candidateSteps = [
+    10, 20, 25, 40, 50, 75, 100, 150, 200, 250, 300, 400, 500, 600, 750, 1000, 1500, 2000,
+  ];
+
+  const validOptions: { yMin: number; yMax: number; step: number; count: number; ticks: number[] }[] = [];
+
+  for (const step of candidateSteps) {
+    // Strictly max 4 ticks on y-axis ([4, 3])
+    for (const count of [4, 3]) {
+      const intervals = count - 1;
+      const totalSpan = intervals * step;
+      if (totalSpan < span) continue;
+
+      const maxYMin = Math.floor(targetMin / step) * step;
+      const minYMin = Math.ceil((targetMax - totalSpan) / step) * step;
+
+      if (maxYMin >= minYMin) {
+        let bestYMin = maxYMin;
+        let bestDiff = Infinity;
+        for (let candidateYMin = minYMin; candidateYMin <= maxYMin; candidateYMin += step) {
+          const center = candidateYMin + totalSpan / 2;
+          const dataCenter = (expMin + expMax) / 2;
+          const diff = Math.abs(center - dataCenter);
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            bestYMin = candidateYMin;
+          }
+        }
+
+        const ticks: number[] = [];
+        for (let i = 0; i < count; i++) {
+          ticks.push(bestYMin + i * step);
+        }
+
+        validOptions.push({
+          yMin: bestYMin,
+          yMax: bestYMin + totalSpan,
+          step,
+          count,
+          ticks: ticks.slice(0, 4), // Guarantee not more than 4 values on Y-axis
+        });
+      }
+    }
+  }
+
+  if (validOptions.length > 0) {
+    // Prefer smallest step that accommodates data within max 4 ticks
+    validOptions.sort((a, b) => {
+      if (a.step !== b.step) return a.step - b.step;
+      return b.count - a.count; // prefer 4 over 3 for same step
+    });
+    const best = validOptions[0];
+    return {
+      ...best,
+      ticks: best.ticks.slice(0, 4),
+    };
+  }
+
+  // Fallback strictly with 4 ticks
+  const fallbackStep = Math.max(50, Math.ceil(span / 3 / 50) * 50);
+  const yMin = Math.floor(targetMin / fallbackStep) * fallbackStep;
+  return {
+    yMin,
+    yMax: yMin + fallbackStep * 3,
+    step: fallbackStep,
+    count: 4,
+    ticks: [yMin, yMin + fallbackStep, yMin + fallbackStep * 2, yMin + fallbackStep * 3],
+  };
 }
 
 export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
@@ -319,56 +460,44 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
       ctx.fillRect(0, 0, w, h);
 
       if (filteredEntries.length === 0) {
-        // Draw subtle placeholder horizontal grid lines
-        ctx.strokeStyle = '#23252E';
+        // Draw subtle placeholder horizontal grid lines (3 lines)
         ctx.lineWidth = 1;
-        for (let y = pad.top; y <= h - pad.bottom; y += 45) {
+        const placeholderYs = [
+          h - pad.bottom,
+          pad.top + (h - pad.top - pad.bottom) / 2,
+          pad.top,
+        ];
+        placeholderYs.forEach((y, idx) => {
+          if (idx === 0) {
+            ctx.setLineDash([]);
+            ctx.strokeStyle = '#272932';
+          } else {
+            ctx.setLineDash([4, 4]);
+            ctx.strokeStyle = '#23252E';
+          }
           ctx.beginPath();
           ctx.moveTo(pad.left, y);
           ctx.lineTo(w - pad.right, y);
           ctx.stroke();
-        }
+        });
+        ctx.setLineDash([]);
         return;
       }
 
-      let dataMin = Infinity;
-      let dataMax = -Infinity;
+      let expMin = Infinity;
+      let expMax = -Infinity;
       filteredEntries.forEach((d) => {
-        const lower = d.fluxLower != null && isFinite(d.fluxLower) ? d.fluxLower : (d.tdee ? d.tdee - 45 : 2200);
-        const upper = d.fluxUpper != null && isFinite(d.fluxUpper) ? d.fluxUpper : (d.tdee ? d.tdee + 45 : 2500);
         if (d.tdee != null && isFinite(d.tdee)) {
-          dataMin = Math.min(dataMin, lower, d.tdee);
-          dataMax = Math.max(dataMax, upper, d.tdee);
+          expMin = Math.min(expMin, d.tdee);
+          expMax = Math.max(expMax, d.tdee);
         }
       });
 
-      if (!isFinite(dataMin)) dataMin = 2200;
-      if (!isFinite(dataMax)) dataMax = 2950;
+      if (!isFinite(expMin)) expMin = 2200;
+      if (!isFinite(expMax)) expMax = 2500;
 
-      // Auto-scale bounds per spec §3.1.2 (display only):
-      // ON  = clamp tightly to [min(fluxLower) - 40, max(fluxUpper) + 40]
-      // OFF = comfortable standard intervals (multiples of 200/500 + padding)
-      let yMin: number;
-      let yMax: number;
-      let step: number;
-      if (isTightScale) {
-        yMin = Math.floor(dataMin - 40);
-        yMax = Math.ceil(dataMax + 40);
-        const span = Math.max(1, yMax - yMin);
-        step = span > 300 ? 100 : 50;
-        yMin = Math.floor(yMin / step) * step;
-        yMax = Math.ceil(yMax / step) * step;
-      } else {
-        const mid = (dataMin + dataMax) / 2;
-        const span = Math.max(400, dataMax - dataMin + 200);
-        step = span > 600 ? 200 : 100;
-        yMin = Math.floor((mid - span / 2) / step) * step;
-        yMax = Math.ceil((mid + span / 2) / step) * step;
-      }
-      if (yMax - yMin < step * 2) {
-        yMin -= step;
-        yMax += step;
-      }
+      // Auto-scale bounds strictly based upon daily expenditure values (difference between ticks ~20)
+      const { yMin, yMax, ticks } = computeExpenditureYTicks(expMin, expMax, isTightScale);
 
       const getX = (i: number) =>
         pad.left + (i / Math.max(1, filteredEntries.length - 1)) * (w - pad.left - pad.right);
@@ -376,31 +505,41 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
       const getY = (val: number) =>
         pad.top + (1 - (val - yMin) / (yMax - yMin || 1)) * (h - pad.top - pad.bottom);
 
-      // Horizontal grid lines & Y-axis labels
+      const yBaseline = getY(yMin);
+
+      // Y-Axis: NumericAxis, opposedPosition: true (labels on right),
+      // majorGridLines: MajorGridLines(width: 1, color: Color(0xFF23252E), dashArray: <double>[4, 4])
+      // Strictly not more than 4 values on Y-axis
       ctx.lineWidth = 1;
       ctx.font = '500 12px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
       ctx.textAlign = 'right';
 
-      for (let gVal = yMin; gVal <= yMax + 0.001; gVal += step) {
+      ticks.forEach((gVal) => {
         const y = getY(gVal);
+
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
         ctx.strokeStyle = '#23252E';
+
         ctx.beginPath();
         ctx.moveTo(pad.left, y);
         ctx.lineTo(w - pad.right, y);
         ctx.stroke();
+        ctx.setLineDash([]);
 
         ctx.fillStyle = '#8B8E99';
-        ctx.fillText(Math.round(gVal).toString(), w - 6, y + 4);
-      }
+        ctx.fillText(Math.round(gVal).toString(), w - 8, y + 4);
+      });
 
-      // Bottom x-axis baseline
+      // X-Axis baseline
       ctx.strokeStyle = '#272932';
+      ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(pad.left, h - pad.bottom + 8);
-      ctx.lineTo(w - pad.right, h - pad.bottom + 8);
+      ctx.moveTo(pad.left, yBaseline);
+      ctx.lineTo(w - pad.right, yBaseline);
       ctx.stroke();
 
-      // Bottom x-axis date labels and ticks
+      // X-Axis: DateTimeAxis, majorGridLines: MajorGridLines(width: 0), tick lines point inward.
       ctx.fillStyle = '#8B8E99';
       ctx.textAlign = 'center';
       const labelInterval = Math.max(1, Math.floor(filteredEntries.length / 6));
@@ -408,13 +547,13 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
       filteredEntries.forEach((d, i) => {
         if (i % labelInterval === 0 || i === filteredEntries.length - 1) {
           const x = getX(i);
-          const yTick = h - pad.bottom + 8;
 
+          // Inward-pointing tick line (points inside canvas towards plot area)
           ctx.strokeStyle = '#434653';
           ctx.lineWidth = 1.2;
           ctx.beginPath();
-          ctx.moveTo(x, yTick);
-          ctx.lineTo(x, yTick - 5);
+          ctx.moveTo(x, yBaseline);
+          ctx.lineTo(x, yBaseline - 5);
           ctx.stroke();
 
           const dateObj = new Date(d.date + 'T00:00:00Z');
@@ -423,71 +562,125 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
             month: 'short',
             timeZone: 'UTC',
           });
-          ctx.fillText(dateLabel, x, h - 12);
+          ctx.fillText(dateLabel, x, yBaseline + 18);
         }
       });
 
-      // 1. Shaded Flux Corridor - render backend fluxLower/fluxUpper directly
-      // (no client-side radius re-smoothing; display only).
-      const upperPts: { x: number; y: number }[] = [];
-      const lowerPts: { x: number; y: number }[] = [];
+      // Layer 1: Flux Range (Shaded Envelope)
+      // Type: SplineRangeAreaSeries<DataExperienceChartPoint, DateTime>
+      // Name: 'Flux Range'
+      // highValueMapper: (point, _) => point.fluxHigh
+      // lowValueMapper: (point, _) => point.fluxLow
+      // borderDrawMode: RangeAreaBorderMode.excludeSides
+      // splineType: SplineType.monotonic
+      // Color: Coral #FA6B4A at 0.18 opacity (dark) or 0.10 (light)
+      const upperPts: Point2D[] = [];
+      const lowerPts: Point2D[] = [];
       filteredEntries.forEach((d, i) => {
-        const u = d.fluxUpper != null && isFinite(d.fluxUpper) ? d.fluxUpper : (d.tdee ? d.tdee + 45 : 2400);
-        const l = d.fluxLower != null && isFinite(d.fluxLower) ? d.fluxLower : (d.tdee ? d.tdee - 45 : 2300);
+        const tdee = d.tdee != null && isFinite(d.tdee) ? d.tdee : 2350;
+        const u = d.fluxHigh != null && isFinite(d.fluxHigh)
+          ? d.fluxHigh
+          : (d.fluxUpper != null && isFinite(d.fluxUpper) ? d.fluxUpper : tdee + 35);
+        const l = d.fluxLow != null && isFinite(d.fluxLow)
+          ? d.fluxLow
+          : (d.fluxLower != null && isFinite(d.fluxLower) ? d.fluxLower : tdee - 35);
+
         upperPts.push({ x: getX(i), y: getY(u) });
         lowerPts.push({ x: getX(i), y: getY(l) });
       });
 
-      if (upperPts.length >= 2) {
-        drawSmoothRibbon(ctx, upperPts, lowerPts, 0.2);
-        ctx.fillStyle = 'rgba(235, 110, 78, 0.20)';
-        ctx.fill();
-      }
-
-      // 2. Smooth Coral Spline (preserve original x-index so markers align
-      // even if a point were ever missing tdee)
+      // Data points for Updating and Holding series
       const tdeePts = filteredEntries
         .map((d, origIdx) => ({ d, origIdx }))
         .filter(({ d }) => d.tdee != null && isFinite(d.tdee))
         .map(({ d, origIdx }) => ({
           x: getX(origIdx),
           y: getY(d.tdee),
-          isHolding: d.isHolding,
+          isHolding: !!d.isHolding || d.strategy === 'holding',
           origIdx,
         }));
 
+      // Clip chart drawing to plot area so curves and envelope never overflow axes or baseline
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(pad.left, pad.top, w - pad.left - pad.right, yBaseline - pad.top);
+      ctx.clip();
+
+      // Render Layer 1: Flux Range (SplineRangeAreaSeries with monotonic spline & excludeSides border)
+      if (upperPts.length >= 2) {
+        drawFluxRangeEnvelope(ctx, upperPts, lowerPts, true);
+      }
+
+      // Layer 2: Updating Series (Solid Line with Nodes)
+      // Type: SplineSeries<DataExperienceChartPoint, DateTime>
+      // Name: 'Updating', color: Color(0xFFFA6B4A), width: 2.4, splineType: SplineType.monotonic
+      // Layer 3: Holding Series (Dashed Line)
+      // Symbol: splineSeriesWithDashArray, dashArray: <double>[6, 4]
       if (tdeePts.length === 1) {
-        ctx.strokeStyle = '#F6805B';
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = '#FA6B4A';
+        ctx.lineWidth = 2.4;
+        if (tdeePts[0].isHolding) {
+          ctx.setLineDash([6, 4]);
+        } else {
+          ctx.setLineDash([]);
+        }
         ctx.beginPath();
         ctx.moveTo(pad.left, tdeePts[0].y);
         ctx.lineTo(w - pad.right, tdeePts[0].y);
         ctx.stroke();
         ctx.setLineDash([]);
       } else if (tdeePts.length >= 2) {
-        ctx.strokeStyle = '#F6805B';
+        const tdeeSegs = computeMonotonicSegments(tdeePts);
         ctx.lineWidth = 2.4;
         ctx.lineJoin = 'round';
         ctx.lineCap = 'round';
-        drawSmoothSpline(ctx, tdeePts, 0.15);
+
+        tdeeSegs.forEach((seg, i) => {
+          const targetPt = tdeePts[i + 1];
+          const isHoldingSegment = targetPt.isHolding;
+
+          ctx.beginPath();
+          ctx.moveTo(seg.p0.x, seg.p0.y);
+          ctx.bezierCurveTo(seg.cp1.x, seg.cp1.y, seg.cp2.x, seg.cp2.y, seg.p1.x, seg.p1.y);
+
+          ctx.strokeStyle = '#FA6B4A';
+          if (isHoldingSegment) {
+            // Holding Series: dashArray [6, 4]
+            ctx.setLineDash([6, 4]);
+          } else {
+            // Updating Series: Solid Line
+            ctx.setLineDash([]);
+          }
+          ctx.stroke();
+        });
+        ctx.setLineDash([]);
       }
 
-      // 3. Node Markers: Hollow circles for Updating, hollow squares for Holding
+      ctx.restore();
+
+      // Markers Configuration:
+      // Updating Series: shape: circle, width: 6, height: 6, borderWidth: 1.8, borderColor: #FA6B4A, color: #16171B
+      // Holding Series: Hollow square (LegendHoldingSquareIcon), width: 6, height: 6, borderWidth: 1.8, borderColor: #FA6B4A, color: #16171B
       const nodeStep = filteredEntries.length > 50 ? Math.ceil(filteredEntries.length / 35) : 1;
       tdeePts.forEach((pt) => {
         if (pt.origIdx % nodeStep === 0 || pt.origIdx === filteredEntries.length - 1) {
-          ctx.fillStyle = '#16171B';
-          ctx.strokeStyle = '#F6805B';
+          ctx.fillStyle = '#16171B'; // isDark ? Color(0xFF16171B) : Colors.white
+          ctx.strokeStyle = '#FA6B4A';
           ctx.lineWidth = 1.8;
-          ctx.beginPath();
+
           if (pt.isHolding) {
-            ctx.rect(pt.x - 3.2, pt.y - 3.2, 6.4, 6.4);
+            // Holding Series: Hollow square (LegendHoldingSquareIcon)
+            ctx.beginPath();
+            ctx.rect(pt.x - 3, pt.y - 3, 6, 6);
+            ctx.fill();
+            ctx.stroke();
           } else {
-            ctx.arc(pt.x, pt.y, 3.2, 0, Math.PI * 2);
+            // Updating Series: Solid Line with Circle Nodes
+            ctx.beginPath();
+            ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
           }
-          ctx.fill();
-          ctx.stroke();
         }
       });
 
@@ -498,19 +691,19 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
         ctx.setLineDash([3, 3]);
         ctx.beginPath();
         ctx.moveTo(hoveredPoint.x, pad.top);
-        ctx.lineTo(hoveredPoint.x, h - pad.bottom + 8);
+        ctx.lineTo(hoveredPoint.x, yBaseline);
         ctx.stroke();
         ctx.setLineDash([]);
 
         const ptY = getY(hoveredPoint.pt.tdee);
-        ctx.fillStyle = '#F6805B';
+        ctx.fillStyle = '#FA6B4A';
         ctx.strokeStyle = '#16171B';
         ctx.lineWidth = 1.8;
         ctx.beginPath();
-        if (hoveredPoint.pt.isHolding) {
-          ctx.rect(hoveredPoint.x - 4.5, ptY - 4.5, 9, 9);
+        if (hoveredPoint.pt.isHolding || hoveredPoint.pt.strategy === 'holding') {
+          ctx.rect(hoveredPoint.x - 4, ptY - 4, 8, 8);
         } else {
-          ctx.arc(hoveredPoint.x, ptY, 5, 0, Math.PI * 2);
+          ctx.arc(hoveredPoint.x, ptY, 4, 0, Math.PI * 2);
         }
         ctx.fill();
         ctx.stroke();
@@ -576,7 +769,7 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
     if (!change || change.status === 'Waiting') {
       return (
         <div className="flex items-center gap-1.5 text-[#868686] w-24 justify-end font-medium">
-          <PauseCircle className="w-4 h-4 text-[#F6805B]" />
+          <PauseCircle className="w-4 h-4 text-[#FA6B4A]" />
           <span>Waiting</span>
         </div>
       );
@@ -584,7 +777,7 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
     if (change.status === 'Increase') {
       return (
         <div className="flex items-center gap-1.5 text-[#868686] w-24 justify-end font-semibold">
-          <ArrowUpRight className="w-4 h-4 text-[#F6805B] stroke-[2.2]" />
+          <ArrowUpRight className="w-4 h-4 text-[#FA6B4A] stroke-[2.2]" />
           <span>Increase</span>
         </div>
       );
@@ -592,14 +785,14 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
     if (change.status === 'Decrease') {
       return (
         <div className="flex items-center gap-1.5 text-[#868686] w-24 justify-end font-semibold">
-          <ArrowDownRight className="w-4 h-4 text-[#F6805B] stroke-[2.2]" />
+          <ArrowDownRight className="w-4 h-4 text-[#FA6B4A] stroke-[2.2]" />
           <span>Decrease</span>
         </div>
       );
     }
     return (
       <div className="flex items-center gap-1.5 text-[#868686] w-24 justify-end font-semibold">
-        <ArrowRight className="w-4 h-4 text-[#F6805B] stroke-[2.2]" />
+        <ArrowRight className="w-4 h-4 text-[#FA6B4A] stroke-[2.2]" />
         <span>No Change</span>
       </div>
     );
@@ -722,7 +915,7 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
               </div>
               <div className="flex items-center justify-between gap-4 text-white">
                 <span className="flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full border border-[#F6805B] bg-[#16171B]" />
+                  <span className="w-2.5 h-2.5 rounded-full border-[1.8px] border-[#FA6B4A] bg-[#16171B]" />
                   Expenditure:
                 </span>
                 <span className="font-bold font-mono tabular-nums">
@@ -731,12 +924,12 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
               </div>
               <div className="flex items-center justify-between gap-4 text-orange-400">
                 <span className="flex items-center gap-1.5">
-                  <span className="w-3 h-1.5 rounded-sm bg-[#ff6b4a]/40" />
+                  <span className="w-3 h-1.5 rounded-sm bg-[#FA6B4A]/18 border-y border-[#FA6B4A]/40" />
                   Flux Range:
                 </span>
                 <span className="font-bold font-mono">
-                  {hoveredPoint.pt.fluxLower || hoveredPoint.pt.tdee - 35} –{' '}
-                  {hoveredPoint.pt.fluxUpper || hoveredPoint.pt.tdee + 35} kcal
+                  {hoveredPoint.pt.fluxLow ?? hoveredPoint.pt.fluxLower ?? hoveredPoint.pt.tdee - 35} –{' '}
+                  {hoveredPoint.pt.fluxHigh ?? hoveredPoint.pt.fluxUpper ?? hoveredPoint.pt.tdee + 35} kcal
                 </span>
               </div>
               <div className="flex items-center justify-between gap-4 text-gray-300">
@@ -799,15 +992,23 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
       {/* Dedicated Legend Pill Card (MacroFactor visual specification) */}
       <div className="flex items-center justify-center text-xs gap-6 py-2 px-4 bg-[#18191E] border border-[#26272F] rounded-2xl shadow-sm">
         <div className="flex items-center gap-2">
-          <span className="w-4 h-2 rounded-sm bg-[#F6805B]/25 border border-[#F6805B]/50" />
+          <span className="w-4 h-2 rounded-sm bg-[#FA6B4A]/18 border-y border-[#FA6B4A]/40" />
           <span className="text-gray-300 font-medium">Flux Range</span>
         </div>
         <div className="flex items-center gap-2">
-          <span className="w-3 h-3 rounded-full border-2 border-[#F6805B] bg-[#16171B]" />
+          <div className="flex items-center">
+            <span className="w-2.5 h-[2.4px] bg-[#FA6B4A]" />
+            <span className="w-2.5 h-2.5 rounded-full border-[1.8px] border-[#FA6B4A] bg-[#16171B]" />
+            <span className="w-2.5 h-[2.4px] bg-[#FA6B4A]" />
+          </div>
           <span className="text-gray-300 font-medium">Updating</span>
         </div>
         <div className="flex items-center gap-2">
-          <span className="w-3 h-3 border-2 border-[#F6805B] bg-[#16171B] rounded-[1px]" />
+          <div className="flex items-center">
+            <span className="w-2 h-[2.4px] border-t-2 border-dashed border-[#FA6B4A] mr-0.5" />
+            <span className="w-2.5 h-2.5 border-[1.8px] border-[#FA6B4A] bg-[#16171B] rounded-[1px]" />
+            <span className="w-2 h-[2.4px] border-t-2 border-dashed border-[#FA6B4A] ml-0.5" />
+          </div>
           <span className="text-gray-300 font-medium">Holding</span>
         </div>
       </div>
@@ -895,21 +1096,24 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
       {/* Daily Expenditure History by Month (Matches Image 1) */}
       <section className="space-y-4">
         {expData?.historyGroups && expData.historyGroups.length > 0 ? (
-          expData.historyGroups.map((group) => (
-            <div key={group.monthName} className="space-y-3">
-              <h3 className="text-lg sm:text-xl font-bold text-white tracking-tight px-0.5">
-                {group.monthName}
-              </h3>
+          expData.historyGroups.map((group) => {
+            const title = group.monthYear || group.monthName || '';
+            const items = group.entries || group.items || [];
+            return (
+              <div key={title} className="space-y-3">
+                <h3 className="text-lg sm:text-xl font-bold text-white tracking-tight px-0.5">
+                  {title}
+                </h3>
 
-              <div className="bg-[#18191E] border border-[#26272F] rounded-2xl divide-y divide-[#23252B] overflow-hidden shadow-sm">
-                {group.items.map((item) => {
-                  const dObj = new Date(item.date + 'T00:00:00Z');
-                  const dayStr = dObj.toLocaleDateString('en-US', {
-                    weekday: 'short',
-                    day: 'numeric',
-                    month: 'short',
-                    timeZone: 'UTC',
-                  });
+                <div className="bg-[#18191E] border border-[#26272F] rounded-2xl divide-y divide-[#23252B] overflow-hidden shadow-sm">
+                  {items.map((item) => {
+                    const dObj = new Date(item.date + 'T00:00:00Z');
+                    const dayStr = dObj.toLocaleDateString('en-US', {
+                      weekday: 'short',
+                      day: 'numeric',
+                      month: 'short',
+                      timeZone: 'UTC',
+                    });
 
                   return (
                     <div
@@ -931,7 +1135,7 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
                           </div>
                         ) : (
                           <div className="flex items-center gap-2 text-gray-400 font-mono text-xs tabular-nums">
-                            <span className="w-3.5 h-3.5 rounded-full border border-[#F6805B] bg-transparent" />
+                            <span className="w-3.5 h-3.5 rounded-full border border-[#FA6B4A] bg-transparent" />
                             <span>
                               {item.tdeeDelta > 0
                                 ? `+${item.tdeeDelta} kcal`
@@ -947,7 +1151,8 @@ export const ExpenditureView: React.FC<ExpenditureViewProps> = ({
                 })}
               </div>
             </div>
-          ))
+          );
+        })
         ) : (
           <div className="text-center py-8 text-gray-500 text-xs">
             No expenditure history recorded yet.

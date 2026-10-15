@@ -9,7 +9,7 @@ logsRouter.get('/', async (_req, res) => {
     const scaleEntries = await prisma.scaleWeightEntry.findMany({
       orderBy: { logDate: 'desc' }
     });
-    const nutritionRollups = await prisma.dailyNutritionRollup.findMany({
+    const calorieLogs = await prisma.dailyCalorieLog.findMany({
       orderBy: { logDate: 'desc' }
     });
     const trendEntries = await prisma.weightTrendEntry.findMany({
@@ -20,11 +20,11 @@ logsRouter.get('/', async (_req, res) => {
     });
 
     const scaleMap = new Map<string, number>();
-    for (const s of scaleEntries) scaleMap.set(s.logDate, s.weightKg);
+    for (const s of scaleEntries) scaleMap.set(s.logDate, s.scaleWeight);
 
-    const nutMap = new Map<string, { calories: number; isFasting: boolean; isPartial: boolean }>();
-    for (const n of nutritionRollups) {
-      nutMap.set(n.logDate, { calories: n.totalCaloriesKcal, isFasting: n.isFasting, isPartial: n.isPartial });
+    const nutMap = new Map<string, { calories: number | null; isFasting: boolean; isPartial: boolean }>();
+    for (const n of calorieLogs) {
+      nutMap.set(n.logDate, { calories: n.calories, isFasting: n.isFasting, isPartial: n.isPartial });
     }
 
     const trendMap = new Map<string, number>();
@@ -37,7 +37,7 @@ logsRouter.get('/', async (_req, res) => {
 
     const allDates = new Set<string>();
     scaleEntries.forEach(s => allDates.add(s.logDate));
-    nutritionRollups.forEach(n => allDates.add(n.logDate));
+    calorieLogs.forEach(n => allDates.add(n.logDate));
     trendEntries.forEach(t => allDates.add(t.logDate));
 
     const sortedDates = Array.from(allDates).sort(
@@ -68,7 +68,7 @@ logsRouter.get('/', async (_req, res) => {
 
 logsRouter.post('/', async (req, res) => {
   try {
-    const { date, scaleWeight, calories, isFasting, isPartial, notes } = req.body;
+    const { date, scaleWeight, calories, isFasting, isPartial } = req.body;
 
     if (!date) {
       return res.status(400).json({ error: 'Date is required (YYYY-MM-DD)' });
@@ -77,30 +77,21 @@ logsRouter.post('/', async (req, res) => {
     // Save or update scale weight entry if provided
     if (scaleWeight !== undefined && scaleWeight !== null && scaleWeight !== '') {
       const weightNum = parseFloat(scaleWeight);
-      if (!isNaN(weightNum)) {
-        const existingScale = await prisma.scaleWeightEntry.findFirst({
-          where: { logDate: date }
+      if (!isNaN(weightNum) && weightNum > 0) {
+        await prisma.scaleWeightEntry.upsert({
+          where: { logDate: date },
+          create: {
+            logDate: date,
+            scaleWeight: weightNum
+          },
+          update: {
+            scaleWeight: weightNum
+          }
         });
-
-        if (existingScale) {
-          await prisma.scaleWeightEntry.update({
-            where: { entryId: existingScale.entryId },
-            data: { weightKg: weightNum, notes }
-          });
-        } else {
-          await prisma.scaleWeightEntry.create({
-            data: {
-              logDate: date,
-              weightKg: weightNum,
-              source: 'manual',
-              notes
-            }
-          });
-        }
       }
     }
 
-    // Save or update daily nutrition rollup
+    // Save or update daily calorie log
     const fastingBool = !!isFasting;
     const partialBool = !!isPartial;
     let calNum: number | null = null;
@@ -112,22 +103,18 @@ logsRouter.post('/', async (req, res) => {
     }
 
     if (calNum !== null && !isNaN(calNum)) {
-      await prisma.dailyNutritionRollup.upsert({
+      await prisma.dailyCalorieLog.upsert({
         where: { logDate: date },
         create: {
           logDate: date,
-          totalCaloriesKcal: calNum,
+          calories: calNum,
           isFasting: fastingBool,
-          isPartial: partialBool,
-          isLoggingComplete: !partialBool,
-          notes
+          isPartial: partialBool
         },
         update: {
-          totalCaloriesKcal: calNum,
+          calories: calNum,
           isFasting: fastingBool,
-          isPartial: partialBool,
-          isLoggingComplete: !partialBool,
-          notes
+          isPartial: partialBool
         }
       });
     }
@@ -146,10 +133,12 @@ logsRouter.delete('/:date', async (req, res) => {
   try {
     const { date } = req.params;
 
-    await prisma.scaleWeightEntry.deleteMany({ where: { logDate: date } });
-    await prisma.dailyNutritionRollup.deleteMany({ where: { logDate: date } });
-    await prisma.weightTrendEntry.deleteMany({ where: { logDate: date } });
-    await prisma.tdeeEntry.deleteMany({ where: { logDate: date } });
+    await prisma.$transaction([
+      prisma.scaleWeightEntry.deleteMany({ where: { logDate: date } }),
+      prisma.dailyCalorieLog.deleteMany({ where: { logDate: date } }),
+      prisma.weightTrendEntry.deleteMany({ where: { logDate: date } }),
+      prisma.tdeeEntry.deleteMany({ where: { logDate: date } })
+    ]);
 
     await recalculatePipeline();
 

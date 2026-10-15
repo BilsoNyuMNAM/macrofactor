@@ -109,10 +109,15 @@ export interface DashboardResponse {
 export interface TdeePoint {
   date: string;
   tdee: number;
-  fluxUpper: number;
-  fluxLower: number;
   tdeeDelta: number;
+  fluxLower: number;
+  fluxUpper: number;
+  fluxRadius: number;
+  fluxHigh?: number;
+  fluxLow?: number;
+  strategy: 'updating' | 'holding' | 'static';
   isHolding: boolean;
+  confidenceScore: number;
 }
 
 export interface IntervalChange {
@@ -123,13 +128,10 @@ export interface IntervalChange {
 }
 
 export interface ExpenditureHistoryGroup {
-  monthName: string;
-  items: Array<{
-    date: string;
-    tdee: number;
-    tdeeDelta: number;
-    isHolding: boolean;
-  }>;
+  monthYear: string;
+  monthName?: string;
+  entries: TdeePoint[];
+  items?: TdeePoint[];
 }
 
 export interface HeaderMetrics {
@@ -150,7 +152,7 @@ export interface ExpenditureResponse {
     ninetyDay: IntervalChange;
   };
   currentExpenditure: number | null;
-  currentStrategy: 'Updating' | 'Holding';
+  currentStrategy: 'Updating' | 'Holding' | 'Static';
   flux?: {
     lower: number;
     upper: number;

@@ -120,7 +120,7 @@ describe('Auth & Onboarding Service', () => {
     // Verify Oct 14 scale weight is NOT overwritten (still 77.8 kg from seed.ts)
     const oct14 = await prisma.scaleWeightEntry.findFirst({ where: { logDate: '2026-10-14' } });
     assert.ok(oct14);
-    assert.strictEqual(oct14.weightKg, 77.8, 'Oct 14 scale weight must remain 77.8 kg');
+    assert.strictEqual(oct14.scaleWeight, 77.8, 'Oct 14 scale weight must remain 77.8 kg');
 
     // Verify login returns isOnboarded: true and onboardingData
     const loginRes = await fetch(`${baseUrl}/login`, {

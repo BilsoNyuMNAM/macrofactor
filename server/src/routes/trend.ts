@@ -18,7 +18,7 @@ trendRouter.get('/', async (req, res) => {
     });
 
     const scaleEntries = await prisma.scaleWeightEntry.findMany({
-      orderBy: { loggedAt: 'asc' }
+      orderBy: { logDate: 'asc' }
     });
 
     const tdeeEntries = await prisma.tdeeEntry.findMany({
@@ -27,7 +27,7 @@ trendRouter.get('/', async (req, res) => {
 
     const scaleMap = new Map<string, number>();
     for (const s of scaleEntries) {
-      scaleMap.set(s.logDate, s.weightKg);
+      scaleMap.set(s.logDate, s.scaleWeight);
     }
 
     const tdeeMap = new Map(tdeeEntries.map(t => [t.logDate, t]));

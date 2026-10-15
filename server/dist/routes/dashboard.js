@@ -66,7 +66,7 @@ exports.dashboardRouter.get('/', async (_req, res) => {
             profile,
             goal,
             currentWeight,
-            currentScaleWeight: latestScale?.weightKg ?? null,
+            currentScaleWeight: latestScale?.scaleWeight ?? null,
             currentTdee,
             tdeeStatus,
             program,
@@ -85,7 +85,7 @@ exports.dashboardRouter.get('/', async (_req, res) => {
             })),
             recentScale: recentScale.map(s => ({
                 date: s.logDate,
-                weight: s.weightKg
+                weight: s.scaleWeight
             }))
         });
     }

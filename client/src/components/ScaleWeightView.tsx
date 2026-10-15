@@ -120,14 +120,7 @@ export const ScaleWeightView: React.FC<ScaleWeightViewProps> = ({
     weightKg: number;
     notes?: string;
   }) => {
-    if (userEmail && !getIsDemoUser(userEmail)) {
-      saveUserLog(userEmail, {
-        date: entryData.date,
-        scaleWeight: entryData.weightKg,
-        notes: entryData.notes,
-      });
-      onShowToast?.(`Logged scale weight of ${entryData.weightKg} kg`);
-    } else {
+    try {
       if (entryData.entryId) {
         await api.updateScaleWeight(entryData.entryId, {
           weightKg: entryData.weightKg,
@@ -143,23 +136,38 @@ export const ScaleWeightView: React.FC<ScaleWeightViewProps> = ({
         });
         onShowToast?.(`Logged scale weight of ${entryData.weightKg} kg`);
       }
+    } catch (err) {
+      if (userEmail && !getIsDemoUser(userEmail)) {
+        saveUserLog(userEmail, {
+          date: entryData.date,
+          scaleWeight: entryData.weightKg,
+          notes: entryData.notes,
+        });
+        onShowToast?.(`Logged scale weight of ${entryData.weightKg} kg (local)`);
+      } else {
+        onShowToast?.('Failed to save scale weight', false);
+      }
     }
     await fetchScaleWeight();
     if (onRefreshAll) await onRefreshAll();
   };
 
   const handleDeleteWeighIn = async (entryId: number) => {
-    if (userEmail && !getIsDemoUser(userEmail)) {
-      const onboarding = getUserOnboarding(userEmail);
-      const logs = getUserLogs(userEmail, onboarding);
-      const match = logs.find((l) => Math.abs(new Date(l.date).getTime()) === entryId);
-      if (match) {
-        deleteUserLog(userEmail, match.date);
-      }
-      onShowToast?.('Scale weight entry deleted');
-    } else {
+    try {
       await api.deleteScaleWeight(entryId);
       onShowToast?.('Scale weight entry deleted');
+    } catch (err) {
+      if (userEmail && !getIsDemoUser(userEmail)) {
+        const onboarding = getUserOnboarding(userEmail);
+        const logs = getUserLogs(userEmail, onboarding);
+        const match = logs.find((l) => Math.abs(new Date(l.date).getTime()) === entryId);
+        if (match) {
+          deleteUserLog(userEmail, match.date);
+        }
+        onShowToast?.('Scale weight entry deleted');
+      } else {
+        onShowToast?.('Failed to delete scale weight', false);
+      }
     }
     await fetchScaleWeight();
     if (onRefreshAll) await onRefreshAll();

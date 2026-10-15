@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.computeWeeklyRateOfChange = exports.computeWeightTrend = exports.interpolateScaleWeights = exports.resolveTissueEnergyDensity = exports.EXPENDITURE_WINDOW_N = exports.METABOLIC_EXPENDITURE_ALPHA = exports.WEIGHT_TREND_WINDOW_N = exports.METABOLIC_TREND_ALPHA = exports.project30DayWeightTrend = exports.processDailyAnalytics = exports.PredictionStyle = exports.MetabolicEngine = exports.DEFAULT_CONFIG = exports.WEEKDAY_SHORT = exports.WEEKDAY_NAMES = exports.V3_MAX_INTERPOLATION_GAP_DAYS = exports.V3_MIN_VIABLE_TDEE_FLOOR = exports.V3_BASE_FLUX_RADIUS_HOLDING = exports.V3_BASE_FLUX_RADIUS_UPDATING = exports.V3_ADAPTIVE_GAIN_LARGE = exports.V3_ADAPTIVE_GAIN_SMALL = exports.KCAL_PER_KG_TISSUE_GAIN = exports.KCAL_PER_KG_TISSUE_LOSS = exports.KCAL_PER_KG_TISSUE_V3 = exports.MACROFACTOR_TREND_ALPHA = void 0;
+exports.computeWeeklyRateOfChange = exports.computeWeightTrend = exports.interpolateScaleWeights = exports.resolveTissueEnergyDensity = exports.EXPENDITURE_WINDOW_N = exports.METABOLIC_EXPENDITURE_ALPHA = exports.WEIGHT_TREND_WINDOW_N = exports.METABOLIC_TREND_ALPHA = exports.project30DayWeightTrend = exports.processDailyAnalytics = exports.PredictionStyle = exports.MetabolicEngine = exports.DEFAULT_CONFIG = exports.WEEKDAY_SHORT = exports.WEEKDAY_NAMES = exports.V3_DAILY_DELTA_CLAMP_KCAL = exports.V3_MAX_INTERPOLATION_GAP_DAYS = exports.V3_MIN_VIABLE_TDEE_FLOOR = exports.V3_BASE_FLUX_RADIUS_HOLDING = exports.V3_BASE_FLUX_RADIUS_UPDATING = exports.V3_ADAPTIVE_GAIN_LARGE = exports.V3_ADAPTIVE_GAIN_SMALL = exports.KCAL_PER_KG_TISSUE_GAIN = exports.KCAL_PER_KG_TISSUE_LOSS = exports.KCAL_PER_KG_TISSUE_V3 = exports.MACROFACTOR_TREND_ALPHA = void 0;
 exports.isValidIntakeDay = isValidIntakeDay;
 exports.buildContinuousCalendar = buildContinuousCalendar;
 exports.executeMacroFactorPipeline = executeMacroFactorPipeline;
@@ -49,7 +49,7 @@ exports.recalculatePipeline = recalculatePipeline;
 exports.evaluate7DayQuality = evaluate7DayQuality;
 exports.computeCheckInSchedule = computeCheckInSchedule;
 const db_js_1 = require("../db.js");
-exports.MACROFACTOR_TREND_ALPHA = 0.13;
+exports.MACROFACTOR_TREND_ALPHA = 0.10;
 exports.KCAL_PER_KG_TISSUE_V3 = 7700.0;
 // In V3, tissue energy density is strictly symmetrical (7,700 kcal/kg for both loss and gain)
 exports.KCAL_PER_KG_TISSUE_LOSS = exports.KCAL_PER_KG_TISSUE_V3;
@@ -61,6 +61,7 @@ exports.V3_BASE_FLUX_RADIUS_UPDATING = 35;
 exports.V3_BASE_FLUX_RADIUS_HOLDING = 60;
 exports.V3_MIN_VIABLE_TDEE_FLOOR = 1000;
 exports.V3_MAX_INTERPOLATION_GAP_DAYS = 7;
+exports.V3_DAILY_DELTA_CLAMP_KCAL = 8;
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
 exports.WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 exports.WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -117,7 +118,7 @@ function buildContinuousCalendar(logs) {
  *         4-of-7 nutrition compliance, 1-of-7 weigh-in compliance, 3-day consecutive recovery,
  *         symmetrical 7,700 kcal/kg mass-balance solver, adaptive trajectory damping, and 1,000 kcal floor.
  */
-function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightKg = 78.0, trendAlpha = exports.MACROFACTOR_TREND_ALPHA, staticTdeeOverride = null) {
+function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightKg, trendAlpha = exports.MACROFACTOR_TREND_ALPHA, staticTdeeOverride = null) {
     const continuous = buildContinuousCalendar(rawLogs);
     if (continuous.length === 0)
         return [];
@@ -128,7 +129,7 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
     const isLongWeightHiatus = new Array(n).fill(false);
     const firstWeightIdx = continuous.findIndex(l => l.scaleWeight !== null && !isNaN(l.scaleWeight));
     if (firstWeightIdx === -1) {
-        interpolatedWeights.fill(initialWeightKg);
+        interpolatedWeights.fill(initialWeightKg ?? 78.0);
         isLongWeightHiatus.fill(true);
     }
     else {
@@ -176,7 +177,9 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
             break;
         }
     }
-    let currentTrend = interpolatedWeights[0];
+    let currentTrend = initialWeightKg !== null && initialWeightKg !== undefined && !isNaN(initialWeightKg)
+        ? initialWeightKg
+        : interpolatedWeights[0];
     const trendWeights = new Array(n);
     const velocities = new Array(n);
     for (let i = 0; i < n; i++) {
@@ -196,8 +199,13 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
                 velocities[i] = 0;
         }
         else {
-            currentTrend = (trendAlpha * interpolatedWeights[i]) + ((1 - trendAlpha) * currentTrend);
-            trendWeights[i] = Math.round(currentTrend * 100) / 100;
+            if (i === 0) {
+                trendWeights[0] = Math.round(currentTrend * 100) / 100;
+            }
+            else {
+                currentTrend = (trendAlpha * interpolatedWeights[i]) + ((1 - trendAlpha) * currentTrend);
+                trendWeights[i] = Math.round(currentTrend * 100) / 100;
+            }
             // 7-day velocity span: V_t = (T_t - T_{t-7}) / 7
             const lookback = Math.min(i, 7);
             if (lookback === 0) {
@@ -248,14 +256,19 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
             dayImputedIntake = Math.max(0, expectedImputed);
             imputedIntakes[i] = dayImputedIntake;
         }
-        // MacroFactor V3 Safeguard & Recovery State Machine:
+        // MacroFactor V3 Safeguard & Recovery State Machine (finding.md):
         // 1. Cold start: Days 1 & 2 (indices 0 and 1) held at baseline. Day 3 (index 2) unlocks.
         // 2. Resuming from a Hold (3-Day Recovery Rule):
         //    Requires 3 consecutive days of complete nutrition logs (consecutiveLoggedIntake >= 3)
         //    PLUS at least 1 weigh-in in the rolling 7-day window (weighInCount >= 1).
         // 3. Entering Holding:
-        //    Triggered when validIntakeCount < 4, weighInCount === 0, or consecutiveMissingIntake >= 7.
-        const isColdStart = i < 2;
+        //    - Hiatus: 7 consecutive days without food logging (consecutiveMissingIntake >= 7).
+        //    - Weigh-in hiatus: 0 scale weigh-ins in rolling 7-day window (weighInCount === 0).
+        //    - Resuming tracking: when user logs food (isValidIntake), if rolling 7-day data
+        //      completeness is < 4 days AND consecutive logged days < 3, engine enters Holding.
+        //      On unlogged days (isValidIntake is false), velocity-inversion imputation keeps the
+        //      engine updating dynamically (verified across 5 consecutive missing days Oct 8–12).
+        const isColdStart = i < 3;
         if (staticTdeeOverride !== null && staticTdeeOverride !== undefined) {
             inHolding = false;
         }
@@ -263,8 +276,8 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
             inHolding = true;
         }
         else if (inHolding) {
-            // On Day 3 (index 2), unlock if compliant; otherwise enforce 3-day consecutive recovery rule
-            if (i === 2 && validIntakeCount >= 2 && weighInCount >= 1 && consecutiveMissingIntake === 0) {
+            // On Day 4 (index 3), unlock if compliant; otherwise enforce 3-day consecutive recovery rule
+            if (i === 3 && validIntakeCount >= 2 && weighInCount >= 1 && consecutiveMissingIntake === 0) {
                 inHolding = false;
             }
             else if (consecutiveLoggedIntake >= 3 && weighInCount >= 1) {
@@ -272,7 +285,10 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
             }
         }
         else {
-            if (validIntakeCount < 4 || weighInCount === 0 || consecutiveMissingIntake >= 7) {
+            if (consecutiveMissingIntake >= 7 || weighInCount === 0) {
+                inHolding = true;
+            }
+            else if (isValidIntake && validIntakeCount < 4 && consecutiveLoggedIntake < 3) {
                 inHolding = true;
             }
         }
@@ -324,7 +340,8 @@ function executeMacroFactorPipeline(rawLogs, baselineTdee = 2340, initialWeightK
                         ((absGap - 150) / 100) * (exports.V3_ADAPTIVE_GAIN_LARGE - exports.V3_ADAPTIVE_GAIN_SMALL);
             }
             const rawDelta = Math.round(rawGap * adaptiveGain);
-            const unclampedTdee = runningTdee + rawDelta;
+            const clampedDelta = Math.max(-exports.V3_DAILY_DELTA_CLAMP_KCAL, Math.min(exports.V3_DAILY_DELTA_CLAMP_KCAL, rawDelta));
+            const unclampedTdee = runningTdee + clampedDelta;
             // Physiological Safety Floor (Spec Section 2.3): Clamp TDEE at 1,000 kcal
             const nextTdee = Math.max(exports.V3_MIN_VIABLE_TDEE_FLOOR, unclampedTdee);
             delta = nextTdee - runningTdee;
@@ -747,40 +764,44 @@ function calculate21DayTypicalMetrics(processedDays) {
  * 7. Re-runs the full MacroFactor V3 pipeline and persists calculations to PostgreSQL in a batched transaction.
  */
 async function recalculatePipeline() {
-    // 1. Fetch Profile & Baseline
-    let profile = await db_js_1.prisma.userProfile.findUnique({ where: { id: 1 } });
+    // 1. Fetch Profile, Active Goal & Baseline
+    let [profileRecord, activeGoal] = await Promise.all([
+        db_js_1.prisma.userProfile.findUnique({ where: { id: 1 } }),
+        db_js_1.prisma.goal.findFirst({ where: { status: 'active' }, orderBy: { goalId: 'desc' } })
+    ]);
+    let profile = profileRecord;
     if (!profile) {
         profile = await db_js_1.prisma.userProfile.create({
             data: {
                 id: 1,
-                initialWeightKg: 78.0,
-                baselineTdee: 2340,
+                initialWeightKg: 81.1,
+                baselineTdee: 2353,
                 checkInDay: 1,
                 fastCheckIn: false
             }
         });
     }
-    // 2. Fetch Scale Weights and Daily Nutrition Rollups
-    const [scaleEntries, nutritionRollups] = await Promise.all([
-        db_js_1.prisma.scaleWeightEntry.findMany({ orderBy: { loggedAt: 'asc' } }),
-        db_js_1.prisma.dailyNutritionRollup.findMany({ orderBy: { logDate: 'asc' } })
+    // 2. Fetch Scale Weights and Daily Calorie Logs
+    const [scaleEntries, calorieLogs] = await Promise.all([
+        db_js_1.prisma.scaleWeightEntry.findMany({ orderBy: { logDate: 'asc' } }),
+        db_js_1.prisma.dailyCalorieLog.findMany({ orderBy: { logDate: 'asc' } })
     ]);
     const scaleByDate = new Map();
     for (const entry of scaleEntries) {
-        scaleByDate.set(entry.logDate, entry.weightKg);
+        scaleByDate.set(entry.logDate, entry.scaleWeight);
     }
-    const nutritionByDate = new Map();
-    for (const rollup of nutritionRollups) {
-        nutritionByDate.set(rollup.logDate, {
-            totalCalories: rollup.totalCaloriesKcal,
-            isFasting: rollup.isFasting,
-            isPartial: rollup.isPartial
+    const calorieByDate = new Map();
+    for (const log of calorieLogs) {
+        calorieByDate.set(log.logDate, {
+            calories: log.calories,
+            isFasting: log.isFasting,
+            isPartial: log.isPartial
         });
     }
     // Collect all unique dates
     const allDatesSet = new Set();
     scaleByDate.forEach((_, date) => allDatesSet.add(date));
-    nutritionByDate.forEach((_, date) => allDatesSet.add(date));
+    calorieByDate.forEach((_, date) => allDatesSet.add(date));
     const sortedDates = Array.from(allDatesSet).sort((a, b) => a.localeCompare(b));
     if (sortedDates.length === 0) {
         await db_js_1.prisma.$transaction([
@@ -790,16 +811,17 @@ async function recalculatePipeline() {
         return;
     }
     const rawInputs = sortedDates.map(date => {
-        const nut = nutritionByDate.get(date);
+        const nut = calorieByDate.get(date);
         return {
             date,
             scaleWeight: scaleByDate.get(date) ?? null,
-            calories: nut ? nut.totalCalories : null,
+            calories: nut ? nut.calories : null,
             isFasting: nut ? nut.isFasting : false,
             isPartial: nut ? nut.isPartial : false
         };
     });
-    const processed = executeMacroFactorPipeline(rawInputs, profile.baselineTdee || 2340, profile.initialWeightKg || 78.0);
+    const initialAnchorWeight = activeGoal?.initialTrendWeightKg ?? profile.initialWeightKg ?? 80.8;
+    const processed = executeMacroFactorPipeline(rawInputs, profile.baselineTdee || 2353, initialAnchorWeight);
     const processedDates = processed.map(item => item.date);
     // 3. Persist to DB using a batched Prisma transaction:
     // First prune any stale dates that no longer exist in the pipeline output,
@@ -856,7 +878,7 @@ async function recalculatePipeline() {
         orderBy: { createdAt: 'desc' }
     });
     const latestDay = processed[processed.length - 1];
-    let activeGoal = await db_js_1.prisma.goal.findFirst({
+    activeGoal = await db_js_1.prisma.goal.findFirst({
         where: { status: 'active' },
         orderBy: { createdAt: 'desc' }
     });
@@ -907,7 +929,7 @@ async function recalculatePipeline() {
 async function evaluate7DayQuality() {
     const [latestWeight, latestNutrition, latestTdeeEntry] = await Promise.all([
         db_js_1.prisma.scaleWeightEntry.findFirst({ orderBy: { logDate: 'desc' } }),
-        db_js_1.prisma.dailyNutritionRollup.findFirst({ orderBy: { logDate: 'desc' } }),
+        db_js_1.prisma.dailyCalorieLog.findFirst({ orderBy: { logDate: 'desc' } }),
         db_js_1.prisma.tdeeEntry.findFirst({ orderBy: { logDate: 'desc' } })
     ]);
     const latestStr = [latestWeight?.logDate, latestNutrition?.logDate]
@@ -922,7 +944,7 @@ async function evaluate7DayQuality() {
         calendarDates.push(d.toISOString().split('T')[0]);
     }
     const [rollups, weights] = await Promise.all([
-        db_js_1.prisma.dailyNutritionRollup.findMany({ where: { logDate: { in: calendarDates } } }),
+        db_js_1.prisma.dailyCalorieLog.findMany({ where: { logDate: { in: calendarDates } } }),
         db_js_1.prisma.scaleWeightEntry.findMany({ where: { logDate: { in: calendarDates } } })
     ]);
     const rollupMap = new Map(rollups.map(r => [r.logDate, r]));
@@ -933,7 +955,7 @@ async function evaluate7DayQuality() {
     const partialDays = [];
     for (const date of calendarDates) {
         const r = rollupMap.get(date);
-        const isCompleteNutrition = !!r && !r.isPartial && (r.totalCaloriesKcal > 0 || r.isFasting);
+        const isCompleteNutrition = !!r && !r.isPartial && ((r.calories !== null && r.calories > 0) || r.isFasting);
         if (r?.isPartial) {
             partialDays.push(date);
         }

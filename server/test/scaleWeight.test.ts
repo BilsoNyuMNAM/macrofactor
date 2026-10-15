@@ -15,6 +15,7 @@ describe('Scale Weight API & Data Aggregation Service', () => {
   let baseUrl: string;
 
   before(async () => {
+    await prisma.scaleWeightEntry.deleteMany({ where: { logDate: '2026-10-15' } });
     await new Promise<void>((resolve) => {
       server = app.listen(0, () => {
         const addr = server.address();
@@ -92,10 +93,10 @@ describe('Scale Weight API & Data Aggregation Service', () => {
 
     const entry = await prisma.scaleWeightEntry.findFirst({ where: { logDate: testDate } });
     assert.ok(entry);
-    assert.strictEqual(entry.weightKg, testWeight);
+    assert.strictEqual(entry.scaleWeight, testWeight);
 
     // Clean up test entry
-    await prisma.scaleWeightEntry.delete({ where: { entryId: entry.entryId } });
+    await prisma.scaleWeightEntry.delete({ where: { logDate: testDate } });
     await recalculatePipeline();
   });
 });

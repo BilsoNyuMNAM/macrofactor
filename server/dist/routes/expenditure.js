@@ -8,14 +8,24 @@ exports.expenditureRouter = (0, express_1.Router)();
 exports.expenditureRouter.get('/', async (req, res) => {
     try {
         const timeframe = req.query.timeframe || '1W';
-        const tdeeEntries = await db_js_1.prisma.tdeeEntry.findMany({
-            orderBy: { logDate: 'asc' }
-        });
-        const trendEntries = await db_js_1.prisma.weightTrendEntry.findMany({
-            orderBy: { logDate: 'asc' }
-        });
-        const trendMap = new Map(trendEntries.map(t => [t.logDate, t]));
-        if (tdeeEntries.length === 0) {
+        const [profile, activeGoal, scaleEntries, calorieLogs] = await Promise.all([
+            db_js_1.prisma.userProfile.findUnique({ where: { id: 1 } }),
+            db_js_1.prisma.goal.findFirst({ where: { status: 'active' }, orderBy: { goalId: 'desc' } }),
+            db_js_1.prisma.scaleWeightEntry.findMany({ orderBy: { logDate: 'asc' } }),
+            db_js_1.prisma.dailyCalorieLog.findMany({ orderBy: { logDate: 'asc' } })
+        ]);
+        const scaleByDate = new Map();
+        for (const s of scaleEntries)
+            scaleByDate.set(s.logDate, s.scaleWeight);
+        const calByDate = new Map();
+        for (const c of calorieLogs) {
+            calByDate.set(c.logDate, { calories: c.calories, isFasting: c.isFasting, isPartial: c.isPartial });
+        }
+        const allDates = new Set();
+        scaleEntries.forEach(s => allDates.add(s.logDate));
+        calorieLogs.forEach(c => allDates.add(c.logDate));
+        const sortedDates = Array.from(allDates).sort((a, b) => a.localeCompare(b));
+        if (sortedDates.length === 0) {
             return res.json({
                 entries: [],
                 header: {
@@ -36,35 +46,28 @@ exports.expenditureRouter.get('/', async (req, res) => {
                 historyGroups: []
             });
         }
-        const processedDays = tdeeEntries.map(e => {
-            const tr = trendMap.get(e.logDate);
+        const rawInputs = sortedDates.map(date => {
+            const nut = calByDate.get(date);
             return {
-                date: e.logDate,
-                rawWeight: null,
-                interpolatedWeight: tr?.trendWeightKg ?? 78.0,
-                trendWeight: tr?.trendWeightKg ?? 78.0,
-                weightVelocityKgPerDay: tr?.velocityKgPerDay ?? 0,
-                rawIntake: null,
-                imputedIntake: null,
-                isFasting: false,
-                isValidIntake: true,
-                tdee: e.expenditureKcal,
-                tdeeDelta: e.tdeeDeltaKcal,
-                fluxUpper: e.fluxUpperKcal,
-                fluxLower: e.fluxLowerKcal,
-                fluxRadius: (e.fluxUpperKcal - e.fluxLowerKcal) / 2,
-                strategy: e.status,
-                isHolding: e.status === 'holding',
-                isColdStart: false,
-                confidenceScore: 1,
-                noiseRangeLower: tr?.noiseRangeLowerKg ?? 77.7,
-                noiseRangeUpper: tr?.noiseRangeUpperKg ?? 78.3
+                date,
+                scaleWeight: scaleByDate.get(date) ?? null,
+                calories: nut ? nut.calories : null,
+                isFasting: nut ? nut.isFasting : false,
+                isPartial: nut ? nut.isPartial : false
             };
         });
+        // Run backend master pipeline to compute full internal ProcessedDay nodes
+        const processedDays = (0, algorithm_js_1.executeMacroFactorPipeline)(rawInputs, profile?.baselineTdee || 2353, activeGoal?.initialTrendWeightKg ?? profile?.initialWeightKg ?? 80.8);
         const header = (0, algorithm_js_1.calculateHeaderMetrics)(processedDays, timeframe);
         const horizonChanges = (0, algorithm_js_1.calculateMultiHorizonChanges)(processedDays);
-        const latest = tdeeEntries[tdeeEntries.length - 1];
-        const changeByHorizon = {};
+        const latest = processedDays[processedDays.length - 1];
+        const changeByHorizon = {
+            threeDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+            sevenDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+            fourteenDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+            thirtyDay: { delta: '—', status: 'Waiting', sparklinePoints: [] },
+            ninetyDay: { delta: '—', status: 'Waiting', sparklinePoints: [] }
+        };
         const keyMap = {
             3: 'threeDay',
             7: 'sevenDay',
@@ -82,47 +85,50 @@ exports.expenditureRouter.get('/', async (req, res) => {
                 };
             }
         }
-        // Group entries by month for history view
-        const historyGroupsMap = new Map();
-        const reversed = [...tdeeEntries].reverse();
-        for (const item of reversed) {
-            const dObj = new Date(item.logDate + 'T00:00:00Z');
-            const monthKey = dObj.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
-            if (!historyGroupsMap.has(monthKey)) {
-                historyGroupsMap.set(monthKey, []);
-            }
-            historyGroupsMap.get(monthKey).push(item);
-        }
-        const historyGroups = Array.from(historyGroupsMap.entries()).map(([monthName, items]) => ({
-            monthName,
-            items: items.map(i => ({
-                date: i.logDate,
-                tdee: i.expenditureKcal,
-                tdeeDelta: i.tdeeDeltaKcal,
-                isHolding: i.status === 'holding'
-            }))
+        // Map 20-field internal ProcessedDay into the 9-field TdeePoint DTO
+        const tdeePoints = processedDays.map(p => ({
+            date: p.date,
+            tdee: p.tdee,
+            tdeeDelta: p.tdeeDelta,
+            fluxLower: p.fluxLower,
+            fluxUpper: p.fluxUpper,
+            fluxRadius: p.fluxRadius,
+            strategy: p.strategy,
+            isHolding: p.isHolding,
+            confidenceScore: p.confidenceScore
         }));
+        // Group into monthYear in reverse chronological order
+        const historyGroupsMap = new Map();
+        for (let i = tdeePoints.length - 1; i >= 0; i--) {
+            const pt = tdeePoints[i];
+            const dObj = new Date(pt.date + 'T00:00:00Z');
+            const monthYear = dObj.toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+            if (!historyGroupsMap.has(monthYear)) {
+                historyGroupsMap.set(monthYear, []);
+            }
+            historyGroupsMap.get(monthYear).push(pt);
+        }
+        const historyGroups = Array.from(historyGroupsMap.entries()).map(([monthYear, entries]) => ({
+            monthYear,
+            monthName: monthYear, // alias for frontend UI component compatibility
+            entries,
+            items: entries // alias for frontend UI component compatibility
+        }));
+        const currentStrategy = latest.strategy === 'static' ? 'Static' : latest.isHolding ? 'Holding' : 'Updating';
         res.json({
-            entries: tdeeEntries.map(e => ({
-                date: e.logDate,
-                tdee: e.expenditureKcal,
-                fluxUpper: e.fluxUpperKcal,
-                fluxLower: e.fluxLowerKcal,
-                tdeeDelta: e.tdeeDeltaKcal,
-                isHolding: e.status === 'holding'
-            })),
+            entries: tdeePoints,
             header: {
-                average: header?.expenditure.average ?? latest.expenditureKcal,
+                average: header?.expenditure.average ?? latest.tdee,
                 differenceFormatted: header?.expenditure.differenceFormatted ?? '0 kcal',
                 rawDifference: header?.expenditure.rawDifference ?? 0,
                 dateRangeSubtitle: header?.dateRangeSubtitle ?? '--'
             },
             changes: changeByHorizon,
-            currentExpenditure: latest.expenditureKcal,
-            currentStrategy: latest.status === 'holding' ? 'Holding' : 'Updating',
+            currentExpenditure: latest.tdee,
+            currentStrategy,
             flux: {
-                lower: latest.fluxLowerKcal,
-                upper: latest.fluxUpperKcal
+                lower: latest.fluxLower,
+                upper: latest.fluxUpper
             },
             historyGroups
         });

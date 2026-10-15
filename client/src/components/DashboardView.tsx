@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { ChevronRight, Check } from 'lucide-react';
+import React from 'react';
+import { ChevronRight, Check, Plus } from 'lucide-react';
 import { DashboardResponse, TrendResponse, ExpenditureResponse } from '../types';
 
 interface DashboardViewProps {
@@ -74,20 +74,14 @@ const ExpenditureSparkline: React.FC<{
   entries: Array<{ tdee: number; fluxUpper?: number; fluxLower?: number }>;
   baselineTdee?: number;
 }> = ({ entries, baselineTdee = 2340 }) => {
-  if (entries.length === 0) {
-    return (
-      <div className="w-full h-full flex items-center justify-center">
-        <div className="w-full border-b border-dashed border-[#2E303A]" />
-      </div>
-    );
-  }
-
   const width = 280;
   const height = 48;
   const padX = 12;
   const padY = 8;
 
   const base = baselineTdee || 2340;
+  const isBaselineOnly = entries.length === 0;
+
   // Use dynamic baseline if not enough points
   const points =
     entries.length >= 2
@@ -142,21 +136,33 @@ const ExpenditureSparkline: React.FC<{
           fill="none"
           stroke="#F6805B"
           strokeWidth="2"
+          strokeDasharray={isBaselineOnly ? '4 3' : undefined}
           strokeLinecap="round"
           strokeLinejoin="round"
         />
       )}
-      {mainPts.map((pt, i) => (
+      {isBaselineOnly ? (
         <circle
-          key={i}
-          cx={pt.x}
-          cy={pt.y}
-          r="2.5"
-          fill="#18191E"
-          stroke="#F6805B"
-          strokeWidth="1.6"
+          cx={width / 2}
+          cy={getY(base)}
+          r="3"
+          fill="#F6805B"
+          stroke="#18191E"
+          strokeWidth="1.5"
         />
-      ))}
+      ) : (
+        mainPts.map((pt, i) => (
+          <circle
+            key={i}
+            cx={pt.x}
+            cy={pt.y}
+            r="2.5"
+            fill="#18191E"
+            stroke="#F6805B"
+            strokeWidth="1.6"
+          />
+        ))
+      )}
     </svg>
   );
 };
@@ -166,20 +172,14 @@ const WeightTrendSparkline: React.FC<{
   weights: number[];
   initialWeight?: number;
 }> = ({ weights, initialWeight = 78.0 }) => {
-  if (weights.length === 0) {
-    return (
-      <div className="w-full h-full flex items-center justify-center">
-        <div className="w-full border-b border-dashed border-[#2E303A]" />
-      </div>
-    );
-  }
-
   const width = 280;
   const height = 48;
   const padX = 12;
   const padY = 8;
 
   const baseW = initialWeight || 78.0;
+  const isBaselineOnly = weights.length === 0;
+
   const points =
     weights.length >= 2
       ? weights
@@ -204,21 +204,33 @@ const WeightTrendSparkline: React.FC<{
           fill="none"
           stroke="#A78BFA"
           strokeWidth="2"
+          strokeDasharray={isBaselineOnly ? '4 3' : undefined}
           strokeLinecap="round"
           strokeLinejoin="round"
         />
       )}
-      {pts.map((pt, i) => (
+      {isBaselineOnly ? (
         <circle
-          key={i}
-          cx={pt.x}
-          cy={pt.y}
-          r="2.5"
-          fill="#18191E"
-          stroke="#A78BFA"
-          strokeWidth="1.6"
+          cx={width / 2}
+          cy={getY(baseW)}
+          r="3"
+          fill="#A78BFA"
+          stroke="#18191E"
+          strokeWidth="1.5"
         />
-      ))}
+      ) : (
+        pts.map((pt, i) => (
+          <circle
+            key={i}
+            cx={pt.x}
+            cy={pt.y}
+            r="2.5"
+            fill="#18191E"
+            stroke="#A78BFA"
+            strokeWidth="1.6"
+          />
+        ))
+      )}
     </svg>
   );
 };
@@ -228,20 +240,14 @@ const ScaleWeightSparkline: React.FC<{
   weights: number[];
   initialWeight?: number;
 }> = ({ weights, initialWeight = 78.0 }) => {
-  if (weights.length === 0) {
-    return (
-      <div className="w-full h-full flex items-center justify-center">
-        <div className="w-full border-b border-dashed border-[#2E303A]" />
-      </div>
-    );
-  }
-
   const width = 280;
   const height = 48;
   const padX = 12;
   const padY = 8;
 
   const baseW = initialWeight || 78.0;
+  const isBaselineOnly = weights.length === 0;
+
   const points =
     weights.length >= 2
       ? weights
@@ -266,21 +272,33 @@ const ScaleWeightSparkline: React.FC<{
           fill="none"
           stroke="#4ADE80"
           strokeWidth="2"
+          strokeDasharray={isBaselineOnly ? '4 3' : undefined}
           strokeLinecap="round"
           strokeLinejoin="round"
         />
       )}
-      {pts.map((pt, i) => (
+      {isBaselineOnly ? (
         <circle
-          key={i}
-          cx={pt.x}
-          cy={pt.y}
-          r="2.5"
-          fill="#18191E"
-          stroke="#4ADE80"
-          strokeWidth="1.6"
+          cx={width / 2}
+          cy={getY(baseW)}
+          r="3"
+          fill="#4ADE80"
+          stroke="#18191E"
+          strokeWidth="1.5"
         />
-      ))}
+      ) : (
+        pts.map((pt, i) => (
+          <circle
+            key={i}
+            cx={pt.x}
+            cy={pt.y}
+            r="2.5"
+            fill="#18191E"
+            stroke="#4ADE80"
+            strokeWidth="1.6"
+          />
+        ))
+      )}
     </svg>
   );
 };
@@ -294,11 +312,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onNavigateToTrend,
   onNavigateToScale,
   onOpenCheckInModal,
-  onOpenOnboardingModal,
-  onOpenLogModal: _onOpenLogModal,
+  onOpenOnboardingModal: _onOpenOnboardingModal,
+  onOpenLogModal,
 }) => {
-  const [activePage, setActivePage] = useState<number>(1); // 1 = Analytics Dashboard (default, matching screenshot)
-
   // Extract recent 7 expenditure points
   const recentExpenditure = React.useMemo(() => {
     if (expenditureData?.entries && expenditureData.entries.length > 0) {
@@ -349,18 +365,45 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const hasTrendWeight = recentTrendWeights.length > 0 || Boolean(trendData?.entries && trendData.entries.length > 0);
   const hasExpenditure = recentExpenditure.length > 0 || Boolean(expenditureData?.entries && expenditureData.entries.length > 0);
 
-  const expNum = data.currentTdee ?? (recentExpenditure.length > 0 ? recentExpenditure[recentExpenditure.length - 1].tdee : null);
-  const expenditureVal = hasExpenditure && expNum != null ? Math.round(expNum).toString() : '—';
+  // Expenditure metric value & subtitle
+  const expNum =
+    data.currentTdee ??
+    (recentExpenditure.length > 0 ? recentExpenditure[recentExpenditure.length - 1].tdee : null) ??
+    expenditureData?.currentExpenditure ??
+    data.profile?.baselineTdee ??
+    null;
+  const expenditureVal = expNum != null ? Math.round(expNum).toString() : '—';
+  const expenditureSubtitle = hasExpenditure
+    ? 'Last 7 Days'
+    : expNum != null
+    ? 'Baseline Estimate'
+    : 'No expenditure data';
 
-  const trendWNum = trendData?.analytics?.currentWeight ?? data.currentWeight ?? (recentTrendWeights.length > 0 ? recentTrendWeights[recentTrendWeights.length - 1] : null);
-  const trendWeightVal = hasTrendWeight && trendWNum != null
-    ? trendWNum.toFixed(1)
-    : '—';
+  // Weight Trend metric value & subtitle
+  const trendWNum =
+    trendData?.analytics?.currentWeight ??
+    data.currentWeight ??
+    (recentTrendWeights.length > 0 ? recentTrendWeights[recentTrendWeights.length - 1] : null) ??
+    data.profile?.initialWeightKg ??
+    null;
+  const trendWeightVal = trendWNum != null ? trendWNum.toFixed(1) : '—';
+  const trendWeightSubtitle = hasTrendWeight
+    ? 'Last 7 Days'
+    : trendWNum != null
+    ? 'Starting Weight Baseline'
+    : 'No trend data';
 
-  const scaleWNum = recentScaleWeights[recentScaleWeights.length - 1] ?? data.currentScaleWeight ?? data.currentWeight;
-  const scaleWeightVal = hasScaleWeight && scaleWNum != null
-    ? scaleWNum.toFixed(1)
-    : '—';
+  // Scale Weight metric value & subtitle
+  const scaleWNum =
+    (recentScaleWeights.length > 0 ? recentScaleWeights[recentScaleWeights.length - 1] : null) ??
+    data.currentScaleWeight ??
+    data.currentWeight ??
+    data.profile?.initialWeightKg ??
+    null;
+  const scaleWeightVal = scaleWNum != null ? scaleWNum.toFixed(1) : '—';
+  const scaleWeightSubtitle = hasScaleWeight
+    ? 'Last 7 Entries'
+    : 'Baseline • Not logged today';
 
   const schedule = data.schedule;
   const isCheckInActionable =
@@ -368,20 +411,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 pt-2 pb-12 animate-in fade-in duration-150">
-      {/* Top 3 Pagination Dots (Native App Carousel) */}
-      <div className="flex items-center justify-center gap-2">
-        {[0, 1, 2].map((page) => (
-          <button
-            key={page}
-            onClick={() => setActivePage(page)}
-            className={`w-2 h-2 rounded-full transition-all ${
-              activePage === page ? 'bg-white scale-125' : 'bg-[#40424D] hover:bg-gray-400'
-            }`}
-            aria-label={`Dashboard Page ${page}`}
-          />
-        ))}
-      </div>
-
       {/* Actionable Check-In Notice Banner (only displayed when check-in is ready/early) */}
       {isCheckInActionable && (
         <div
@@ -396,7 +425,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div className="text-sm font-bold text-white flex items-center gap-2">
                 <span>Weekly Check-In Available</span>
                 <span className="text-[10px] px-2 py-0.5 rounded bg-orange-500/20 text-orange-300 font-semibold uppercase">
-                  {schedule.state === 'ready' ? 'Ready' : 'Early'}
+                  {schedule?.state === 'ready' ? 'Ready' : 'Early'}
                 </span>
               </div>
               <p className="text-xs text-gray-300 mt-0.5">
@@ -411,224 +440,146 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
-      {/* PAGE 1: Analytics & Insights Dashboard (Default, Exact replica of user screenshot) */}
-      {activePage === 1 && (
-        <div className="space-y-6">
-          {/* Section 1: Insights & Analytics */}
-          <section className="space-y-3">
-            <div className="flex items-center justify-between px-0.5">
-              <h3 className="text-[18px] font-bold text-white tracking-tight">Insights & Analytics</h3>
-              <button
-                onClick={onNavigateToExpenditure}
-                className="text-[13px] font-semibold text-gray-400 hover:text-white transition-colors"
-              >
-                See All
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 sm:gap-4">
-              {/* Card 1: Expenditure */}
-              <div
-                onClick={onNavigateToExpenditure}
-                className="bg-[#18191E] border border-[#26272F] hover:border-[#383A44] rounded-2xl p-4 sm:p-5 flex flex-col justify-between cursor-pointer transition-all group"
-              >
-                <div>
-                  <h4 className="text-[15px] font-semibold text-white tracking-tight">Expenditure</h4>
-                  <p className="text-[12px] text-gray-400 mt-0.5">
-                    {hasExpenditure ? 'Last 7 Days' : 'No expenditure data'}
-                  </p>
-                </div>
-
-                <div className="my-3 h-[58px] flex items-center">
-                  <ExpenditureSparkline
-                    entries={recentExpenditure}
-                    baselineTdee={data.profile?.baselineTdee ?? (data.currentTdee ?? undefined)}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between pt-3 border-t border-[#23242B]">
-                  <div>
-                    <span className="text-[20px] font-bold text-white tracking-tight font-sans">
-                      {expenditureVal}
-                    </span>
-                    {hasExpenditure && (
-                      <span className="text-[13px] text-gray-400 ml-1 font-normal">kcal</span>
-                    )}
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-gray-500 group-hover:text-gray-300 transition-colors" />
-                </div>
-              </div>
-
-              {/* Card 2: Weight Trend */}
-              <div
-                onClick={onNavigateToTrend}
-                className="bg-[#18191E] border border-[#26272F] hover:border-[#383A44] rounded-2xl p-4 sm:p-5 flex flex-col justify-between cursor-pointer transition-all group"
-              >
-                <div>
-                  <h4 className="text-[15px] font-semibold text-white tracking-tight">Weight Trend</h4>
-                  <p className="text-[12px] text-gray-400 mt-0.5">
-                    {hasTrendWeight ? 'Last 7 Days' : 'No trend data'}
-                  </p>
-                </div>
-
-                <div className="my-3 h-[58px] flex items-center">
-                  <WeightTrendSparkline
-                    weights={recentTrendWeights}
-                    initialWeight={data.profile?.initialWeightKg ?? (data.currentWeight ?? undefined)}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between pt-3 border-t border-[#23242B]">
-                  <div>
-                    <span className="text-[20px] font-bold text-white tracking-tight font-sans">
-                      {trendWeightVal}
-                    </span>
-                    {hasTrendWeight && (
-                      <span className="text-[13px] text-gray-400 ml-1 font-normal">kg</span>
-                    )}
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-gray-500 group-hover:text-gray-300 transition-colors" />
-                </div>
-              </div>
-            </div>
-          </section>
-
-          {/* Section 2: Body Metrics */}
-          <section className="space-y-3">
-            <div className="flex items-center justify-between px-0.5">
-              <h3 className="text-[18px] font-bold text-white tracking-tight">Body Metrics</h3>
-              <button
-                onClick={onNavigateToScale || onNavigateToTrend}
-                className="text-[13px] font-semibold text-gray-400 hover:text-white transition-colors"
-              >
-                See All
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 sm:gap-4">
-              {/* Card 1: Scale Weight */}
-              <div
-                onClick={onNavigateToScale || onNavigateToTrend}
-                className="bg-[#18191E] border border-[#26272F] hover:border-[#383A44] rounded-2xl p-4 sm:p-5 flex flex-col justify-between cursor-pointer transition-all group"
-              >
-                <div>
-                  <h4 className="text-[15px] font-semibold text-white tracking-tight">Scale Weight</h4>
-                  <p className="text-[12px] text-gray-400 mt-0.5">
-                    {hasScaleWeight ? 'Last 7 Entries' : 'No entries recorded'}
-                  </p>
-                </div>
-
-                <div className="my-3 h-[58px] flex items-center">
-                  <ScaleWeightSparkline
-                    weights={recentScaleWeights}
-                    initialWeight={data.currentScaleWeight ?? data.profile?.initialWeightKg ?? (data.currentWeight ?? undefined)}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between pt-3 border-t border-[#23242B]">
-                  <div>
-                    <span className="text-[20px] font-bold text-white tracking-tight font-sans">
-                      {scaleWeightVal}
-                    </span>
-                    {hasScaleWeight && (
-                      <span className="text-[13px] text-gray-400 ml-1 font-normal">kg</span>
-                    )}
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-gray-500 group-hover:text-gray-300 transition-colors" />
-                </div>
-              </div>
-            </div>
-          </section>
+      {/* Section 1: Insights & Analytics */}
+      <section className="space-y-3">
+        <div className="flex items-center justify-between px-0.5">
+          <h3 className="text-[18px] font-bold text-white tracking-tight">Insights & Analytics</h3>
+          <button
+            onClick={onNavigateToExpenditure}
+            className="text-[13px] font-semibold text-gray-400 hover:text-white transition-colors"
+          >
+            See All
+          </button>
         </div>
-      )}
 
-      {/* PAGE 0: Nutrition Program & Macro Targets */}
-      {activePage === 0 && (
-        <section className="bg-[#18191E] border border-[#26272F] rounded-2xl p-6 shadow-sm space-y-6">
-          <div className="flex items-center justify-between">
-            <h3 className="text-base font-bold text-white">Daily Macro Nutrition Targets</h3>
-            <span className="text-xs text-teal-400 font-semibold px-2 py-0.5 rounded bg-teal-500/10 border border-teal-500/20">
-              Balanced Program
-            </span>
-          </div>
-
-          <div className="bg-[#121316] border border-[#272930] rounded-xl p-4 flex items-center justify-between">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 sm:gap-4">
+          {/* Card 1: Expenditure */}
+          <div
+            onClick={onNavigateToExpenditure}
+            className="bg-[#18191E] border border-[#26272F] hover:border-[#383A44] rounded-2xl p-4 sm:p-5 flex flex-col justify-between cursor-pointer transition-all group"
+          >
             <div>
-              <span className="text-xs text-gray-400 font-medium">Daily Calorie Target</span>
-              <div className="text-2xl font-black font-mono text-white mt-0.5">
-                {data.program.calories.toLocaleString()} <span className="text-xs font-normal text-gray-400">kcal</span>
-              </div>
+              <h4 className="text-[15px] font-semibold text-white tracking-tight">Expenditure</h4>
+              <p className="text-[12px] text-gray-400 mt-0.5">
+                {expenditureSubtitle}
+              </p>
             </div>
-            <div className="text-right">
-              <span className="text-xs text-gray-400 font-medium">Daily Deficit</span>
-              <div className="text-lg font-bold font-mono text-blue-400 mt-0.5">
-                -{Math.abs(data.program.dailyDeficitKcal)} <span className="text-xs font-normal text-gray-400">kcal</span>
+
+            <div className="my-3 h-[58px] flex items-center">
+              <ExpenditureSparkline
+                entries={recentExpenditure}
+                baselineTdee={expNum ?? data.profile?.baselineTdee ?? 2340}
+              />
+            </div>
+
+            <div className="flex items-center justify-between pt-3 border-t border-[#23242B]">
+              <div>
+                <span className="text-[20px] font-bold text-white tracking-tight font-sans">
+                  {expenditureVal}
+                </span>
+                {expNum != null && (
+                  <span className="text-[13px] text-gray-400 ml-1 font-normal">kcal</span>
+                )}
               </div>
+              <ChevronRight className="w-4 h-4 text-gray-500 group-hover:text-gray-300 transition-colors" />
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
-            <div className="bg-[#121316] border border-[#272930] rounded-xl p-3 text-center">
-              <span className="text-xs font-bold text-[#38bdf8] uppercase">Protein</span>
-              <div className="text-lg font-black font-mono text-white mt-1">
-                {data.program.proteinGrams ?? 160}g
-              </div>
+          {/* Card 2: Weight Trend */}
+          <div
+            onClick={onNavigateToTrend}
+            className="bg-[#18191E] border border-[#26272F] hover:border-[#383A44] rounded-2xl p-4 sm:p-5 flex flex-col justify-between cursor-pointer transition-all group"
+          >
+            <div>
+              <h4 className="text-[15px] font-semibold text-white tracking-tight">Weight Trend</h4>
+              <p className="text-[12px] text-gray-400 mt-0.5">
+                {trendWeightSubtitle}
+              </p>
             </div>
-            <div className="bg-[#121316] border border-[#272930] rounded-xl p-3 text-center">
-              <span className="text-xs font-bold text-[#f59e0b] uppercase">Fat</span>
-              <div className="text-lg font-black font-mono text-white mt-1">
-                {data.program.fatGrams ?? 60}g
-              </div>
-            </div>
-            <div className="bg-[#121316] border border-[#272930] rounded-xl p-3 text-center">
-              <span className="text-xs font-bold text-[#10b981] uppercase">Carbs</span>
-              <div className="text-lg font-black font-mono text-white mt-1">
-                {data.program.carbGrams ?? 200}g
-              </div>
-            </div>
-          </div>
-        </section>
-      )}
 
-      {/* PAGE 2: Goals & Strategy Summary */}
-      {activePage === 2 && (
-        <section className="bg-[#18191E] border border-[#26272F] rounded-2xl p-6 shadow-sm space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-base font-bold text-white">Goal & Progress</h3>
-            <button
-              onClick={onOpenOnboardingModal}
-              className="text-xs text-gray-400 hover:text-white underline"
-            >
-              Edit Goal
-            </button>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div className="bg-[#121316] border border-[#272930] rounded-xl p-4">
-              <span className="text-xs text-gray-400 font-medium">Target Weight</span>
-              <div className="text-xl font-bold font-mono text-white mt-1">
-                {data.goal?.targetWeightKg !== null && data.goal?.targetWeightKg !== undefined
-                  ? data.goal.targetWeightKg.toFixed(1)
-                  : data.profile?.initialWeightKg
-                  ? (data.profile.initialWeightKg - 2).toFixed(1)
-                  : '75.0'}{' '}
-                <span className="text-xs text-gray-400">kg</span>
-              </div>
+            <div className="my-3 h-[58px] flex items-center">
+              <WeightTrendSparkline
+                weights={recentTrendWeights}
+                initialWeight={trendWNum ?? data.profile?.initialWeightKg ?? 78.0}
+              />
             </div>
-            <div className="bg-[#121316] border border-[#272930] rounded-xl p-4">
-              <span className="text-xs text-gray-400 font-medium">Target Loss Rate</span>
-              <div className="text-xl font-bold font-mono text-white mt-1">
-                -{data.program.weeklyLossRateKg.toFixed(2)} <span className="text-xs text-gray-400">kg/wk</span>
+
+            <div className="flex items-center justify-between pt-3 border-t border-[#23242B]">
+              <div>
+                <span className="text-[20px] font-bold text-white tracking-tight font-sans">
+                  {trendWeightVal}
+                </span>
+                {trendWNum != null && (
+                  <span className="text-[13px] text-gray-400 ml-1 font-normal">kg</span>
+                )}
               </div>
+              <ChevronRight className="w-4 h-4 text-gray-500 group-hover:text-gray-300 transition-colors" />
             </div>
           </div>
+        </div>
+      </section>
 
-          <div className="bg-[#121316] border border-[#272930] rounded-xl p-4 flex items-center justify-between">
-            <span className="text-xs text-gray-400">Est. Target Completion</span>
-            <span className="text-sm font-semibold text-white">{data.program.estimatedEndDateStr}</span>
+      {/* Section 2: Body Metrics */}
+      <section className="space-y-3">
+        <div className="flex items-center justify-between px-0.5">
+          <h3 className="text-[18px] font-bold text-white tracking-tight">Body Metrics</h3>
+          <button
+            onClick={onNavigateToScale || onNavigateToTrend}
+            className="text-[13px] font-semibold text-gray-400 hover:text-white transition-colors"
+          >
+            See All
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 sm:gap-4">
+          {/* Card 1: Scale Weight */}
+          <div
+            onClick={onNavigateToScale || onNavigateToTrend}
+            className="bg-[#18191E] border border-[#26272F] hover:border-[#383A44] rounded-2xl p-4 sm:p-5 flex flex-col justify-between cursor-pointer transition-all group"
+          >
+            <div className="flex items-start justify-between">
+              <div>
+                <h4 className="text-[15px] font-semibold text-white tracking-tight">Scale Weight</h4>
+                <p className="text-[12px] text-gray-400 mt-0.5">
+                  {scaleWeightSubtitle}
+                </p>
+              </div>
+              {!hasScaleWeight && onOpenLogModal && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenLogModal();
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#4ADE80]/15 border border-[#4ADE80]/30 text-[#4ADE80] text-xs font-semibold hover:bg-[#4ADE80]/25 transition-all active:scale-95 shrink-0"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Log Today</span>
+                </button>
+              )}
+            </div>
+
+            <div className="my-3 h-[58px] flex items-center">
+              <ScaleWeightSparkline
+                weights={recentScaleWeights}
+                initialWeight={scaleWNum ?? data.profile?.initialWeightKg ?? 78.0}
+              />
+            </div>
+
+            <div className="flex items-center justify-between pt-3 border-t border-[#23242B]">
+              <div>
+                <span className="text-[20px] font-bold text-white tracking-tight font-sans">
+                  {scaleWeightVal}
+                </span>
+                {scaleWNum != null && (
+                  <span className="text-[13px] text-gray-400 ml-1 font-normal">kg</span>
+                )}
+              </div>
+              <ChevronRight className="w-4 h-4 text-gray-500 group-hover:text-gray-300 transition-colors" />
+            </div>
           </div>
-        </section>
-      )}
+        </div>
+      </section>
     </div>
   );
 };

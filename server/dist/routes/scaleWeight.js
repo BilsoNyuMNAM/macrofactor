@@ -74,10 +74,10 @@ exports.scaleWeightRouter.get('/', async (req, res) => {
         const scaleMap = new Map();
         for (const e of scaleEntries) {
             scaleMap.set(e.logDate, {
-                entryId: e.entryId,
-                weightKg: e.weightKg,
-                source: e.source,
-                notes: e.notes
+                entryId: parseInt(e.logDate.replace(/-/g, ''), 10),
+                weightKg: e.scaleWeight,
+                source: 'manual',
+                notes: null
             });
         }
         // 4. Determine timeline span
@@ -109,7 +109,7 @@ exports.scaleWeightRouter.get('/', async (req, res) => {
         // Build a continuous array of known points
         const allDatesWithWeights = [];
         for (const s of scaleEntries) {
-            allDatesWithWeights.push({ dateStr: s.logDate, weight: s.weightKg });
+            allDatesWithWeights.push({ dateStr: s.logDate, weight: s.scaleWeight });
         }
         function getInterpolatedWeightForDate(targetDateStr) {
             if (scaleMap.has(targetDateStr)) {
@@ -219,12 +219,12 @@ exports.scaleWeightRouter.get('/', async (req, res) => {
                 });
             }
             historyGroupsMap.get(monthKey).entries.push({
-                entryId: e.entryId,
+                entryId: parseInt(e.logDate.replace(/-/g, ''), 10),
                 logDate: e.logDate,
                 formattedDate: formatDayLabel(e.logDate),
-                weightKg: e.weightKg,
-                source: e.source,
-                notes: e.notes
+                weightKg: e.scaleWeight,
+                source: 'manual',
+                notes: null
             });
         }
         const history = Array.from(historyGroupsMap.values());
@@ -255,33 +255,25 @@ exports.scaleWeightRouter.get('/', async (req, res) => {
 // POST /api/scale-weight: Log or update scale weight
 exports.scaleWeightRouter.post('/', async (req, res) => {
     try {
-        const { date, weightKg, notes } = req.body;
+        const { date, weightKg, scaleWeight } = req.body;
         if (!date) {
             return res.status(400).json({ error: 'Date is required (YYYY-MM-DD)' });
         }
-        const weightNum = parseFloat(weightKg);
+        const val = weightKg !== undefined && weightKg !== null ? weightKg : scaleWeight;
+        const weightNum = parseFloat(val);
         if (isNaN(weightNum) || weightNum <= 0) {
             return res.status(400).json({ error: 'Valid positive weight in kg is required' });
         }
-        const existing = await db_js_1.prisma.scaleWeightEntry.findFirst({
-            where: { logDate: date }
+        await db_js_1.prisma.scaleWeightEntry.upsert({
+            where: { logDate: date },
+            create: {
+                logDate: date,
+                scaleWeight: weightNum
+            },
+            update: {
+                scaleWeight: weightNum
+            }
         });
-        if (existing) {
-            await db_js_1.prisma.scaleWeightEntry.update({
-                where: { entryId: existing.entryId },
-                data: { weightKg: weightNum, notes: notes !== undefined ? notes : existing.notes }
-            });
-        }
-        else {
-            await db_js_1.prisma.scaleWeightEntry.create({
-                data: {
-                    logDate: date,
-                    weightKg: weightNum,
-                    source: 'manual',
-                    notes: notes || null
-                }
-            });
-        }
         // Run metabolic and trend recalculation pipeline
         await (0, algorithm_js_1.recalculatePipeline)();
         res.json({ success: true, message: `Scale weight ${weightNum.toFixed(1)} kg logged for ${date}` });
@@ -294,27 +286,23 @@ exports.scaleWeightRouter.post('/', async (req, res) => {
 // PUT /api/scale-weight/:id: Update entry
 exports.scaleWeightRouter.put('/:id', async (req, res) => {
     try {
-        const entryId = parseInt(req.params.id, 10);
-        if (isNaN(entryId)) {
-            return res.status(400).json({ error: 'Invalid entry ID' });
-        }
-        const { weightKg, logDate, notes } = req.body;
-        const weightNum = parseFloat(weightKg);
+        const rawId = String(req.params.id);
+        const targetDate = req.body.logDate || (rawId.includes('-') ? rawId : `${rawId.slice(0, 4)}-${rawId.slice(4, 6)}-${rawId.slice(6, 8)}`);
+        const val = req.body.weightKg !== undefined && req.body.weightKg !== null ? req.body.weightKg : req.body.scaleWeight;
+        const weightNum = parseFloat(val);
         if (isNaN(weightNum) || weightNum <= 0) {
             return res.status(400).json({ error: 'Valid weightKg is required' });
         }
         const entry = await db_js_1.prisma.scaleWeightEntry.findUnique({
-            where: { entryId }
+            where: { logDate: targetDate }
         });
         if (!entry) {
             return res.status(404).json({ error: 'Entry not found' });
         }
         await db_js_1.prisma.scaleWeightEntry.update({
-            where: { entryId },
+            where: { logDate: targetDate },
             data: {
-                weightKg: weightNum,
-                logDate: logDate || entry.logDate,
-                notes: notes !== undefined ? notes : entry.notes
+                scaleWeight: weightNum
             }
         });
         await (0, algorithm_js_1.recalculatePipeline)();
@@ -328,18 +316,16 @@ exports.scaleWeightRouter.put('/:id', async (req, res) => {
 // DELETE /api/scale-weight/:id: Delete entry
 exports.scaleWeightRouter.delete('/:id', async (req, res) => {
     try {
-        const entryId = parseInt(req.params.id, 10);
-        if (isNaN(entryId)) {
-            return res.status(400).json({ error: 'Invalid entry ID' });
-        }
+        const rawId = String(req.params.id);
+        const targetDate = rawId.includes('-') ? rawId : `${rawId.slice(0, 4)}-${rawId.slice(4, 6)}-${rawId.slice(6, 8)}`;
         const entry = await db_js_1.prisma.scaleWeightEntry.findUnique({
-            where: { entryId }
+            where: { logDate: targetDate }
         });
         if (!entry) {
             return res.status(404).json({ error: 'Entry not found' });
         }
         await db_js_1.prisma.scaleWeightEntry.delete({
-            where: { entryId }
+            where: { logDate: targetDate }
         });
         await (0, algorithm_js_1.recalculatePipeline)();
         res.json({ success: true, message: 'Scale weight entry deleted' });

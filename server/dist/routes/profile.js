@@ -65,7 +65,7 @@ exports.profileRouter.put('/', async (req, res) => {
 exports.profileRouter.post('/reset-logs', async (_req, res) => {
     try {
         await db_js_1.prisma.scaleWeightEntry.deleteMany();
-        await db_js_1.prisma.dailyNutritionRollup.deleteMany();
+        await db_js_1.prisma.dailyCalorieLog.deleteMany();
         await db_js_1.prisma.weightTrendEntry.deleteMany();
         await db_js_1.prisma.tdeeEntry.deleteMany();
         await (0, algorithm_js_1.recalculatePipeline)();

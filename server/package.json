@@ -11,7 +11,7 @@
     "prisma:push": "prisma db push",
     "prisma:seed": "tsx prisma/seed.ts",
     "db:setup": "prisma db push && tsx prisma/seed.ts",
-    "test": "tsx --test 'test/**/*.test.ts'"
+    "test": "tsx --test --test-concurrency=1 'test/**/*.test.ts'"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

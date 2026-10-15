@@ -11,7 +11,7 @@ async function main() {
     where: { id: 1 },
     update: {
       initialWeightKg: 81.1,
-      baselineTdee: 2335,
+      baselineTdee: 2353,
       checkInDay: 1, // Monday
       fastCheckIn: false
     },
@@ -21,7 +21,7 @@ async function main() {
       birthDate: '1998-05-15',
       heightCm: 178.0,
       initialWeightKg: 81.1,
-      baselineTdee: 2335,
+      baselineTdee: 2353,
       bmrEquation: 'macrofactor_2024',
       checkInDay: 1,
       fastCheckIn: false,
@@ -36,7 +36,7 @@ async function main() {
   await prisma.checkinHistory.deleteMany();
   await prisma.scaleWeightEntry.deleteMany();
   await prisma.weightTrendEntry.deleteMany();
-  await prisma.dailyNutritionRollup.deleteMany();
+  await prisma.dailyCalorieLog.deleteMany();
   await prisma.tdeeEntry.deleteMany();
   await prisma.goal.deleteMany();
 
@@ -46,7 +46,7 @@ async function main() {
       goalType: 'weight_loss',
       startWeightKg: 81.1,
       targetWeightKg: 76.0,
-      initialTrendWeightKg: 81.1,
+      initialTrendWeightKg: 80.8,
       weeklyRatePercent: -0.50,
       weeklyRateKg: 0.40,
       startDate: '2026-09-14',
@@ -103,21 +103,18 @@ async function main() {
       await prisma.scaleWeightEntry.create({
         data: {
           logDate: item.date,
-          loggedAt: new Date(`${item.date}T08:00:00Z`),
-          weightKg: item.scale,
-          source: 'manual'
+          scaleWeight: item.scale
         }
       });
     }
 
     if (item.cals !== null) {
-      await prisma.dailyNutritionRollup.create({
+      await prisma.dailyCalorieLog.create({
         data: {
           logDate: item.date,
-          totalCaloriesKcal: item.cals,
+          calories: item.cals,
           isFasting: !!item.isFasting,
-          isPartial: false,
-          isLoggingComplete: true
+          isPartial: false
         }
       });
     }

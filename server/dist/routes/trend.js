@@ -12,14 +12,14 @@ exports.trendRouter.get('/', async (req, res) => {
             orderBy: { logDate: 'asc' }
         });
         const scaleEntries = await db_js_1.prisma.scaleWeightEntry.findMany({
-            orderBy: { loggedAt: 'asc' }
+            orderBy: { logDate: 'asc' }
         });
         const tdeeEntries = await db_js_1.prisma.tdeeEntry.findMany({
             orderBy: { logDate: 'asc' }
         });
         const scaleMap = new Map();
         for (const s of scaleEntries) {
-            scaleMap.set(s.logDate, s.weightKg);
+            scaleMap.set(s.logDate, s.scaleWeight);
         }
         const tdeeMap = new Map(tdeeEntries.map(t => [t.logDate, t]));
         if (trendEntries.length === 0) {

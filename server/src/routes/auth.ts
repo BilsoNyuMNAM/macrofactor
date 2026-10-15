@@ -342,23 +342,16 @@ authRouter.post('/complete-onboarding', async (req, res) => {
       });
 
       // 2. Insert or update today's scale weight entry
-      const existingScale = await tx.scaleWeightEntry.findFirst({
+      await tx.scaleWeightEntry.upsert({
         where: { logDate: todayStr },
+        create: {
+          logDate: todayStr,
+          scaleWeight: curW,
+        },
+        update: {
+          scaleWeight: curW,
+        },
       });
-      if (existingScale) {
-        await tx.scaleWeightEntry.update({
-          where: { entryId: existingScale.entryId },
-          data: { weightKg: curW },
-        });
-      } else {
-        await tx.scaleWeightEntry.create({
-          data: {
-            logDate: todayStr,
-            weightKg: curW,
-            source: 'initial_setup',
-          },
-        });
-      }
 
       // 3. Upsert today's trend entry
       await tx.weightTrendEntry.upsert({

@@ -165,6 +165,19 @@ export const App: React.FC = () => {
   }, [userEmail]);
 
   useEffect(() => {
+    // Harmonize active session with backend user account
+    fetch('/api/auth/me')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.authenticated && data?.user?.email) {
+          setUserEmail(data.user.email);
+          localStorage.setItem('mf_user_email', data.user.email);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
     refreshAll();
   }, [refreshAll]);
 
@@ -177,15 +190,17 @@ export const App: React.FC = () => {
     isPartial?: boolean;
   }) => {
     try {
-      if (!getIsDemoUser(userEmail)) {
-        saveUserLog(userEmail, data);
-        showToast(`Saved entry for ${data.date}`);
-        await refreshAll();
-      } else {
+      try {
         await api.saveLog(data);
-        showToast(`Saved entry for ${data.date}`);
-        await refreshAll();
+      } catch (backendErr) {
+        if (userEmail && !getIsDemoUser(userEmail)) {
+          saveUserLog(userEmail, data);
+        } else {
+          throw backendErr;
+        }
       }
+      showToast(`Saved entry for ${data.date}`);
+      await refreshAll();
     } catch (err) {
       showToast('Failed to save entry', false);
     }
@@ -193,15 +208,17 @@ export const App: React.FC = () => {
 
   const handleDeleteLog = async (date: string) => {
     try {
-      if (!getIsDemoUser(userEmail)) {
-        deleteUserLog(userEmail, date);
-        showToast(`Deleted ${date}`);
-        await refreshAll();
-      } else {
+      try {
         await api.deleteLog(date);
-        showToast(`Deleted ${date}`);
-        await refreshAll();
+      } catch (backendErr) {
+        if (userEmail && !getIsDemoUser(userEmail)) {
+          deleteUserLog(userEmail, date);
+        } else {
+          throw backendErr;
+        }
       }
+      showToast(`Deleted ${date}`);
+      await refreshAll();
     } catch (err) {
       showToast('Failed to delete entry', false);
     }
@@ -209,14 +226,17 @@ export const App: React.FC = () => {
 
   const handleCompleteCheckIn = async (holdExisting: boolean, goalRatePercent?: number) => {
     try {
-      if (!getIsDemoUser(userEmail)) {
-        showToast('Check-in finalized successfully! Program updated.');
-        await refreshAll();
-      } else {
+      try {
         const res = await api.submitCheckIn({ holdExisting, goalRatePercent });
         showToast(res.message);
-        await refreshAll();
+      } catch (backendErr) {
+        if (userEmail && !getIsDemoUser(userEmail)) {
+          showToast('Check-in finalized successfully! Program updated.');
+        } else {
+          throw backendErr;
+        }
       }
+      await refreshAll();
     } catch (err) {
       showToast('Failed to finalize check-in', false);
     }
@@ -224,17 +244,19 @@ export const App: React.FC = () => {
 
   const handleSaveCheckInDay = async (day: number) => {
     try {
-      if (!getIsDemoUser(userEmail)) {
-        const onboarding = getUserOnboarding(userEmail) || {};
-        onboarding.checkInDay = day;
-        setUserOnboarding(userEmail, onboarding);
-        showToast('Check-in day updated');
-        await refreshAll();
-      } else {
+      try {
         await api.setCheckInDay(day);
-        showToast('Check-in day updated');
-        await refreshAll();
+      } catch (backendErr) {
+        if (userEmail && !getIsDemoUser(userEmail)) {
+          const onboarding = getUserOnboarding(userEmail) || {};
+          onboarding.checkInDay = day;
+          setUserOnboarding(userEmail, onboarding);
+        } else {
+          throw backendErr;
+        }
       }
+      showToast('Check-in day updated');
+      await refreshAll();
     } catch (err) {
       showToast('Failed to update check-in day', false);
     }
@@ -242,19 +264,20 @@ export const App: React.FC = () => {
 
   const handleToggleFastCheckIn = async (val?: boolean) => {
     try {
-      if (!getIsDemoUser(userEmail)) {
-        const onboarding = getUserOnboarding(userEmail) || {};
-        const nextVal = val !== undefined ? val : !onboarding.fastCheckIn;
-        onboarding.fastCheckIn = nextVal;
-        setUserOnboarding(userEmail, onboarding);
-        showToast(`Fast Check-In ${nextVal ? 'Enabled' : 'Disabled'}`);
-        await refreshAll();
-      } else {
-        const nextVal = val !== undefined ? val : !(strategyData?.fastCheckIn ?? false);
+      const nextVal = val !== undefined ? val : !(strategyData?.fastCheckIn ?? false);
+      try {
         await api.setFastCheckIn(nextVal);
-        showToast(`Fast Check-In ${nextVal ? 'Enabled' : 'Disabled'}`);
-        await refreshAll();
+      } catch (backendErr) {
+        if (userEmail && !getIsDemoUser(userEmail)) {
+          const onboarding = getUserOnboarding(userEmail) || {};
+          onboarding.fastCheckIn = nextVal;
+          setUserOnboarding(userEmail, onboarding);
+        } else {
+          throw backendErr;
+        }
       }
+      showToast(`Fast Check-In ${nextVal ? 'Enabled' : 'Disabled'}`);
+      await refreshAll();
     } catch (err) {
       showToast('Failed to toggle fast check-in', false);
     }
@@ -267,21 +290,23 @@ export const App: React.FC = () => {
     biologicalSex?: string;
   }) => {
     try {
-      if (!getIsDemoUser(userEmail)) {
-        const onboarding = getUserOnboarding(userEmail) || {};
-        onboarding.startingWeightKg = data.currentWeight;
-        onboarding.baselineTdee = data.baselineTdee;
-        if (data.biologicalSex) onboarding.biologicalSex = data.biologicalSex;
-        if (!onboarding.goal) onboarding.goal = {};
-        onboarding.goal.targetWeightKg = data.goalWeight;
-        setUserOnboarding(userEmail, onboarding);
-        showToast(`Profile & baseline updated!`);
-        await refreshAll();
-      } else {
+      try {
         await api.updateProfile(data);
-        showToast(`Profile & baseline updated!`);
-        await refreshAll();
+      } catch (backendErr) {
+        if (userEmail && !getIsDemoUser(userEmail)) {
+          const onboarding = getUserOnboarding(userEmail) || {};
+          onboarding.startingWeightKg = data.currentWeight;
+          onboarding.baselineTdee = data.baselineTdee;
+          if (data.biologicalSex) onboarding.biologicalSex = data.biologicalSex;
+          if (!onboarding.goal) onboarding.goal = {};
+          onboarding.goal.targetWeightKg = data.goalWeight;
+          setUserOnboarding(userEmail, onboarding);
+        } else {
+          throw backendErr;
+        }
       }
+      showToast(`Profile & baseline updated!`);
+      await refreshAll();
     } catch (err) {
       showToast('Failed to update profile', false);
     }
@@ -290,15 +315,17 @@ export const App: React.FC = () => {
   const handleConfirmClearLogs = async () => {
     if (window.confirm('Clear all log entries? Your program and metabolic baseline will be preserved.')) {
       try {
-        if (!getIsDemoUser(userEmail)) {
-          clearUserLogs(userEmail);
-          showToast('All daily logs cleared');
-          await refreshAll();
-        } else {
+        try {
           await api.resetLogs();
-          showToast('All daily logs cleared');
-          await refreshAll();
+        } catch (backendErr) {
+          if (userEmail && !getIsDemoUser(userEmail)) {
+            clearUserLogs(userEmail);
+          } else {
+            throw backendErr;
+          }
         }
+        showToast('All daily logs cleared');
+        await refreshAll();
       } catch (err) {
         showToast('Failed to clear logs', false);
       }
@@ -311,20 +338,23 @@ export const App: React.FC = () => {
     recalculateProgramNow?: boolean;
   }) => {
     try {
-      if (!getIsDemoUser(userEmail)) {
-        const onboarding = getUserOnboarding(userEmail) || {};
-        if (!onboarding.goal) onboarding.goal = {};
-        if (data.targetWeightKg !== undefined) onboarding.goal.targetWeightKg = data.targetWeightKg;
-        if (data.weeklyRatePercent !== undefined) onboarding.goal.weeklyRatePercent = data.weeklyRatePercent;
-        setUserOnboarding(userEmail, onboarding);
-        showToast('Goal parameters updated');
-        await refreshAll();
-      } else {
-        if (!strategyData?.goal) return;
-        await api.updateGoal(strategyData.goal.goalId, data);
-        showToast('Goal parameters updated');
-        await refreshAll();
+      try {
+        if (strategyData?.goal) {
+          await api.updateGoal(strategyData.goal.goalId, data);
+        }
+      } catch (backendErr) {
+        if (userEmail && !getIsDemoUser(userEmail)) {
+          const onboarding = getUserOnboarding(userEmail) || {};
+          if (!onboarding.goal) onboarding.goal = {};
+          if (data.targetWeightKg !== undefined) onboarding.goal.targetWeightKg = data.targetWeightKg;
+          if (data.weeklyRatePercent !== undefined) onboarding.goal.weeklyRatePercent = data.weeklyRatePercent;
+          setUserOnboarding(userEmail, onboarding);
+        } else {
+          throw backendErr;
+        }
       }
+      showToast('Goal parameters updated');
+      await refreshAll();
     } catch (err) {
       showToast('Failed to update goal', false);
       throw err;
@@ -337,23 +367,24 @@ export const App: React.FC = () => {
     weeklyRatePercent: number;
   }) => {
     try {
-      if (!getIsDemoUser(userEmail)) {
-        const onboarding = getUserOnboarding(userEmail) || {};
-        onboarding.goal = {
-          goalType: data.goalType,
-          targetWeightKg: data.targetWeightKg,
-          weeklyRatePercent: data.weeklyRatePercent,
-        };
-        setUserOnboarding(userEmail, onboarding);
-        showToast('New goal activated! Please configure your new nutrition program.');
-        await refreshAll();
-        setIsNewProgramModalOpen(true);
-      } else {
+      try {
         await api.createGoal(data);
-        showToast('New goal activated! Please configure your new nutrition program.');
-        await refreshAll();
-        setIsNewProgramModalOpen(true);
+      } catch (backendErr) {
+        if (userEmail && !getIsDemoUser(userEmail)) {
+          const onboarding = getUserOnboarding(userEmail) || {};
+          onboarding.goal = {
+            goalType: data.goalType,
+            targetWeightKg: data.targetWeightKg,
+            weeklyRatePercent: data.weeklyRatePercent,
+          };
+          setUserOnboarding(userEmail, onboarding);
+        } else {
+          throw backendErr;
+        }
       }
+      showToast('New goal activated! Please configure your new nutrition program.');
+      await refreshAll();
+      setIsNewProgramModalOpen(true);
     } catch (err: any) {
       showToast(err?.message || 'Failed to activate new goal', false);
       throw err;
@@ -368,21 +399,24 @@ export const App: React.FC = () => {
     higherCalorieSurplus?: number;
   }) => {
     try {
-      if (!getIsDemoUser(userEmail)) {
-        const onboarding = getUserOnboarding(userEmail) || {};
-        if (!onboarding.program) onboarding.program = {};
-        onboarding.program.programStyle = data.programStyle;
-        if (data.targetCalories) onboarding.program.targetCalories = data.targetCalories;
-        if (data.higherCalorieDays) onboarding.program.higherCalorieDays = data.higherCalorieDays;
-        if (data.higherCalorieSurplus) onboarding.program.higherCalorieSurplus = data.higherCalorieSurplus;
-        setUserOnboarding(userEmail, onboarding);
-        showToast('New program activated successfully');
-        await refreshAll();
-      } else {
+      try {
         const res = await api.createProgram(data);
         showToast(res.message);
-        await refreshAll();
+      } catch (backendErr) {
+        if (userEmail && !getIsDemoUser(userEmail)) {
+          const onboarding = getUserOnboarding(userEmail) || {};
+          if (!onboarding.program) onboarding.program = {};
+          onboarding.program.programStyle = data.programStyle;
+          if (data.targetCalories) onboarding.program.targetCalories = data.targetCalories;
+          if (data.higherCalorieDays) onboarding.program.higherCalorieDays = data.higherCalorieDays;
+          if (data.higherCalorieSurplus) onboarding.program.higherCalorieSurplus = data.higherCalorieSurplus;
+          setUserOnboarding(userEmail, onboarding);
+          showToast('New program activated successfully');
+        } else {
+          throw backendErr;
+        }
       }
+      await refreshAll();
     } catch (err: any) {
       showToast(err?.message || 'Failed to activate new program', false);
       throw err;
@@ -397,21 +431,24 @@ export const App: React.FC = () => {
     higherCalorieSurplus?: number;
   }) => {
     try {
-      if (!getIsDemoUser(userEmail)) {
-        const onboarding = getUserOnboarding(userEmail) || {};
-        if (!onboarding.program) onboarding.program = {};
-        if (data.programStyle) onboarding.program.programStyle = data.programStyle;
-        if (data.targetCalories) onboarding.program.targetCalories = data.targetCalories;
-        if (data.higherCalorieDays) onboarding.program.higherCalorieDays = data.higherCalorieDays;
-        if (data.higherCalorieSurplus) onboarding.program.higherCalorieSurplus = data.higherCalorieSurplus;
-        setUserOnboarding(userEmail, onboarding);
-        showToast('Program updated successfully');
-        await refreshAll();
-      } else {
+      try {
         const res = await api.updateProgram(data);
         showToast(res.message);
-        await refreshAll();
+      } catch (backendErr) {
+        if (userEmail && !getIsDemoUser(userEmail)) {
+          const onboarding = getUserOnboarding(userEmail) || {};
+          if (!onboarding.program) onboarding.program = {};
+          if (data.programStyle) onboarding.program.programStyle = data.programStyle;
+          if (data.targetCalories) onboarding.program.targetCalories = data.targetCalories;
+          if (data.higherCalorieDays) onboarding.program.higherCalorieDays = data.higherCalorieDays;
+          if (data.higherCalorieSurplus) onboarding.program.higherCalorieSurplus = data.higherCalorieSurplus;
+          setUserOnboarding(userEmail, onboarding);
+          showToast('Program updated successfully');
+        } else {
+          throw backendErr;
+        }
       }
+      await refreshAll();
     } catch (err: any) {
       showToast(err?.message || 'Failed to update program', false);
       throw err;
@@ -420,20 +457,25 @@ export const App: React.FC = () => {
 
   const handleDeleteGoal = async (goalId: number) => {
     try {
-      if (!getIsDemoUser(userEmail)) {
-        const onboarding = getUserOnboarding(userEmail) || {};
-        delete onboarding.goal;
-        setUserOnboarding(userEmail, onboarding);
-        showToast('Goal retired');
-        await refreshAll();
-        setIsNewProgramModalOpen(true);
-      } else {
+      let requiresNewProgram = false;
+      try {
         const res = await api.deleteGoal(goalId);
         showToast(res.message);
-        await refreshAll();
-        if (res.requiresNewProgram) {
-          setIsNewProgramModalOpen(true);
+        requiresNewProgram = Boolean(res.requiresNewProgram);
+      } catch (backendErr) {
+        if (userEmail && !getIsDemoUser(userEmail)) {
+          const onboarding = getUserOnboarding(userEmail) || {};
+          delete onboarding.goal;
+          setUserOnboarding(userEmail, onboarding);
+          showToast('Goal retired');
+          requiresNewProgram = true;
+        } else {
+          throw backendErr;
         }
+      }
+      await refreshAll();
+      if (requiresNewProgram) {
+        setIsNewProgramModalOpen(true);
       }
     } catch (err: any) {
       showToast(err?.message || 'Failed to delete goal', false);
@@ -443,24 +485,26 @@ export const App: React.FC = () => {
 
   const handleTransitionToMaintenance = async () => {
     try {
-      if (!getIsDemoUser(userEmail)) {
-        const onboarding = getUserOnboarding(userEmail) || {};
-        if (!onboarding.goal) onboarding.goal = {};
-        onboarding.goal.goalType = 'maintenance';
-        onboarding.goal.weeklyRatePercent = 0;
-        onboarding.goal.targetWeightKg = null;
-        setUserOnboarding(userEmail, onboarding);
-        showToast('Transitioned to Maintenance Mode! Targets locked to expenditure.');
-        await refreshAll();
-      } else {
+      try {
         await api.createGoal({
           goalType: 'maintenance',
           weeklyRatePercent: 0,
           targetWeightKg: null
         });
-        showToast('Transitioned to Maintenance Mode! Targets locked to expenditure.');
-        await refreshAll();
+      } catch (backendErr) {
+        if (userEmail && !getIsDemoUser(userEmail)) {
+          const onboarding = getUserOnboarding(userEmail) || {};
+          if (!onboarding.goal) onboarding.goal = {};
+          onboarding.goal.goalType = 'maintenance';
+          onboarding.goal.weeklyRatePercent = 0;
+          onboarding.goal.targetWeightKg = null;
+          setUserOnboarding(userEmail, onboarding);
+        } else {
+          throw backendErr;
+        }
       }
+      showToast('Transitioned to Maintenance Mode! Targets locked to expenditure.');
+      await refreshAll();
     } catch (err) {
       showToast('Failed to transition to maintenance mode', false);
     }
