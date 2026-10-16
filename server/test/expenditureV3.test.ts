@@ -145,15 +145,19 @@ describe('MacroFactor Expenditure Algorithm V3 Specification Tests', () => {
     // Day 7 should be Updating
     assert.equal(results[6].isHolding, false);
 
-    // Days 8-12: Velocity-inversion imputation keeps engine in Updating
-    for (let i = 7; i <= 11; i++) {
+    // Days 8-11: Velocity-inversion imputation keeps engine in Updating as long as >= 3 days in rolling 7d
+    for (let i = 7; i <= 10; i++) {
       assert.equal(results[i].isHolding, false, `Day ${i + 1} must be Updating via imputation`);
       assert.ok(results[i].imputedIntake !== null, `Day ${i + 1} must have imputed intake`);
     }
 
-    // Day 13: Resuming tracking with incomplete 7-day data triggers Safeguard Holding (delta = 0)
+    // Day 12: 5th missing day drops rolling 7d nutrition to 2 days (< 3 days required) -> triggers Holding
+    assert.equal(results[11].isHolding, true, 'Day 12 must enter Holding due to < 3 food days in rolling 7-day window');
+    assert.equal(results[11].tdeeDelta, 0, 'Holding state must freeze delta to 0');
+
+    // Day 13: Resuming tracking with incomplete 7-day data (2/7 days) remains in Safeguard Holding
     const day13 = results[12];
-    assert.equal(day13.isHolding, true, 'Day 13 must be in Holding due to < 4 food days and < 3 consecutive logs');
+    assert.equal(day13.isHolding, true, 'Day 13 must be in Holding due to < 3 food days and < 3 consecutive logs');
     assert.equal(day13.tdeeDelta, 0, 'Holding state must strictly freeze TDEE delta to 0');
     assert.equal(day13.tdee, results[11].tdee, 'Holding state must preserve previous day TDEE');
   });
@@ -175,20 +179,22 @@ describe('MacroFactor Expenditure Algorithm V3 Specification Tests', () => {
       const d = i < 10 ? `0${i}` : `${i}`;
       logs.push({ date: `2026-01-${d}`, scaleWeight: 80.0, calories: null });
     }
-    // Days 15-16: logs food for 2 days (not enough for 3-day recovery rule)
+    // Days 15-17: logs food for 3 days to satisfy 3-day recovery requirement
     logs.push({ date: '2026-01-15', scaleWeight: 80.0, calories: 2400 });
     logs.push({ date: '2026-01-16', scaleWeight: 80.0, calories: 2400 });
-    // Day 17: 3rd consecutive food day logged
     logs.push({ date: '2026-01-17', scaleWeight: 80.0, calories: 2400 });
+    // Day 18: 4th day (after 3 full consecutive logged days) updates resume
+    logs.push({ date: '2026-01-18', scaleWeight: 80.0, calories: 2400 });
 
     const results = executeMacroFactorPipeline(logs, baselineTdee, initialWeight);
 
-    // Days 15 & 16 remain in holding
+    // Days 15, 16 & 17 remain in holding during the 3 required logging days
     assert.equal(results[14].isHolding, true, 'Day 15 (1st log) must still be in Holding');
     assert.equal(results[15].isHolding, true, 'Day 16 (2nd log) must still be in Holding');
+    assert.equal(results[16].isHolding, true, 'Day 17 (3rd log) must still be in Holding');
 
-    // Day 17: 3rd consecutive log unpauses!
-    assert.equal(results[16].isHolding, false, 'Day 17 (3rd consecutive log) must unpause to Updating');
+    // Day 18: After 3 consecutive logged days, updates resume
+    assert.equal(results[17].isHolding, false, 'Day 18 (first day after 3 logged days) must unpause to Updating');
   });
 
   // ==========================================================================

@@ -357,11 +357,15 @@ export function executeMacroFactorPipeline(
     //    PLUS at least 1 weigh-in in the rolling 7-day window (weighInCount >= 1).
     // 3. Entering Holding:
     //    - Hiatus: 7 consecutive days without food logging (consecutiveMissingIntake >= 7).
-    //    - Weigh-in hiatus: 0 scale weigh-ins in rolling 7-day window (weighInCount === 0).
-    //    - Resuming tracking: when user logs food (isValidIntake), if rolling 7-day data
-    //      completeness is < 4 days AND consecutive logged days < 3, engine enters Holding.
-    //      On unlogged days (isValidIntake is false), velocity-inversion imputation keeps the
-    //      engine updating dynamically (verified across 5 consecutive missing days Oct 8–12).
+    // MacroFactor Safeguard & Recovery State Machine:
+    // 1. Cold start: Days 1, 2, 3 (indices 0, 1, 2) held at baseline. Day 4 (index 3) unlocks if compliant.
+    // 2. Continuous Updating Requirements:
+    //    "Updating requires at least 3 days of nutrition data and 1 day of weight data per 7-day period"
+    //    If rolling 7-day validIntakeCount < 3 or weighInCount < 1, engine enters/remains in Holding.
+    // 3. Resuming from Holding (3-Day Recovery Rule):
+    //    "3 consecutive days of logging to start updating"
+    //    Requires completing 3 consecutive days of logged nutrition (consecutiveLoggedIntake > 3)
+    //    PLUS meeting rolling 7-day requirements (validIntakeCount >= 3 && weighInCount >= 1).
     const isColdStart = i < 3;
 
     if (staticTdeeOverride !== null && staticTdeeOverride !== undefined) {
@@ -369,16 +373,13 @@ export function executeMacroFactorPipeline(
     } else if (isColdStart) {
       inHolding = true;
     } else if (inHolding) {
-      // On Day 4 (index 3), unlock if compliant; otherwise enforce 3-day consecutive recovery rule
-      if (i === 3 && validIntakeCount >= 2 && weighInCount >= 1 && consecutiveMissingIntake === 0) {
+      if (i === 3 && validIntakeCount >= 3 && weighInCount >= 1) {
         inHolding = false;
-      } else if (consecutiveLoggedIntake >= 3 && weighInCount >= 1) {
+      } else if (consecutiveLoggedIntake > 3 && validIntakeCount >= 3 && weighInCount >= 1) {
         inHolding = false;
       }
     } else {
-      if (consecutiveMissingIntake >= 7 || weighInCount === 0) {
-        inHolding = true;
-      } else if (isValidIntake && validIntakeCount < 4 && consecutiveLoggedIntake < 3) {
+      if (validIntakeCount < 3 || weighInCount < 1) {
         inHolding = true;
       }
     }
